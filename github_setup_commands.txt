@@ -1,0 +1,14 @@
+# GitHub Repository Setup Commands
+# Run these commands after creating the repository on GitHub
+
+# Add the remote repository (replace YOUR_USERNAME with your GitHub username)
+git remote add origin https://github.com/YOUR_USERNAME/Jetson-Demo-Bot-Johnny-5.git
+
+# Rename the default branch to main (if needed)
+git branch -M main
+
+# Push the code to GitHub
+git push -u origin main
+
+# Verify the remote is set correctly
+git remote -v

@@ -226,34 +226,151 @@ pip3 install \
 
 ## Embedded Development
 
-### Teensy Development
-```bash
-# Arduino IDE (download from arduino.cc)
-# Teensyduino add-on (download from pjrc.com)
+### Teensy 4.1 Development Tools
 
-# PlatformIO alternative
+#### Arduino IDE + Teensyduino (Recommended)
+```bash
+# Download and install Arduino IDE 2.3.2 or later
+# From: https://www.arduino.cc/en/software
+
+# Download and install Teensyduino add-on
+# From: https://www.pjrc.com/teensy/td_download.html
+# Select: Arduino IDE 2.3.2 (or your version)
+# Install all libraries and tools
+```
+
+#### PlatformIO (Alternative)
+```bash
+# Install PlatformIO Core
 pip3 install platformio
 
-# micro-ROS for Teensy
-# Follow micro-ROS installation guide for Teensy
+# Install Teensy platform
+pio platform install teensy
+
+# Create new project
+pio project init --board teensy41
+```
+
+#### Teensy-Specific Libraries
+```bash
+# Essential libraries for robot development
+# Install via Arduino IDE Library Manager:
+# - BNO055 (IMU sensor)
+# - CAN (CAN bus communication)
+# - Wire (I2C communication)
+# - SPI (SPI communication)
+# - Servo (if using servo motors)
+# - EEPROM (for configuration storage)
+```
+
+### FSESC Motor Controller Tools
+
+#### VESC Tool (Primary)
+```bash
+# Download VESC Tool from:
+# https://vesc-project.com/vesc_tool
+# Version: 6.02 or later
+
+# For Windows: Download VESC_Tool_6.02.exe
+# For Linux: Download AppImage or compile from source
+```
+
+#### VESC Configuration
+```bash
+# VESC Tool features needed:
+# - Motor configuration and calibration
+# - CAN bus setup
+# - Current and voltage limits
+# - PID tuning for balance control
+# - Data logging and monitoring
+```
+
+#### FSESC-Specific Software
+```bash
+# Flipsky FSESC6.7 Pro configuration:
+# - Use VESC Tool with FSESC firmware
+# - Configure for dual motor setup
+# - Set up CAN bus communication
+# - Calibrate motor parameters
 ```
 
 ### Communication Protocols
+
+#### CAN Bus Setup
 ```bash
 # CAN bus utilities
 sudo apt install -y \
     can-utils \
     can-utils-dev
 
-# Serial communication
+# Windows CAN tools
+# Install Peak PCAN-USB drivers if using Peak CAN adapter
+# Or use USB-CAN adapters with appropriate drivers
+
+# Test CAN communication
+candump can0
+cansend can0 123#DEADBEEF
+```
+
+#### Serial Communication
+```bash
+# Serial communication tools
 pip3 install \
     pyserial \
     pymodbus
 
+# Windows serial tools
+# Install CH340/CP2102 drivers for USB-serial adapters
+# Use PuTTY or Arduino IDE Serial Monitor
+```
+
+#### I2C/SPI Utilities
+```bash
 # I2C/SPI utilities
 sudo apt install -y \
     i2c-tools \
     python3-smbus
+
+# Windows I2C tools
+# Use Arduino IDE or custom Python scripts
+```
+
+### Development Workflow Tools
+
+#### Code Management
+```bash
+# Git for version control
+sudo apt install -y git
+
+# VS Code with Arduino extension
+# Install: Arduino extension by Microsoft
+# Install: PlatformIO IDE extension
+```
+
+#### Debugging Tools
+```bash
+# Serial debugging
+pip3 install \
+    pyserial \
+    colorama
+
+# CAN bus debugging
+pip3 install \
+    python-can \
+    cantools
+```
+
+#### Testing and Validation
+```bash
+# Unit testing for embedded code
+pip3 install \
+    pytest \
+    pytest-mock
+
+# Hardware-in-the-loop testing
+pip3 install \
+    pyserial \
+    python-can
 ```
 
 ## Development Tools
@@ -426,6 +543,114 @@ pip install \
 
 echo "Python environment created at ~/robot_env"
 echo "Activate with: source ~/robot_env/bin/activate"
+```
+
+### Windows Development Setup Script
+Create `setup_windows_dev.bat`:
+
+```batch
+@echo off
+echo Setting up Windows development environment for Jetson Self-Balancing Robot...
+
+REM Install Python 3.11
+winget install Python.Python.3.11
+
+REM Install Git
+winget install Git.Git
+
+REM Install VS Code
+winget install Microsoft.VisualStudioCode
+
+REM Install Arduino IDE
+winget install Arduino.ArduinoIDE
+
+REM Install PuTTY for serial communication
+winget install PuTTY.PuTTY
+
+REM Install Python packages
+pip install pyserial colorama python-can cantools
+
+echo.
+echo Manual installations needed:
+echo 1. Download Teensyduino from https://www.pjrc.com/teensy/td_download.html
+echo 2. Download VESC Tool from https://vesc-project.com/vesc_tool
+echo 3. Install VS Code extensions:
+echo    - Arduino (Microsoft)
+echo    - PlatformIO IDE
+echo    - Python (Microsoft)
+echo.
+echo Setup complete!
+pause
+```
+
+### Teensy Development Setup
+Create `setup_teensy_dev.md`:
+
+```markdown
+# Teensy 4.1 Development Setup
+
+## 1. Install Arduino IDE
+- Download from: https://www.arduino.cc/en/software
+- Install version 2.3.2 or later
+
+## 2. Install Teensyduino
+- Download from: https://www.pjrc.com/teensy/td_download.html
+- Select your Arduino IDE version
+- Install all libraries and tools
+
+## 3. Install Required Libraries
+Open Arduino IDE → Tools → Manage Libraries:
+- BNO055 (Adafruit)
+- CAN (Thomas Barth)
+- Wire (built-in)
+- SPI (built-in)
+- EEPROM (built-in)
+
+## 4. Configure Board
+- Tools → Board → Teensy 4.1
+- Tools → USB Type → Serial
+- Tools → CPU Speed → 600 MHz
+
+## 5. Test Connection
+- Connect Teensy via USB
+- Select correct COM port
+- Upload Blink example
+```
+
+### FSESC Configuration Setup
+Create `setup_fsesc_config.md`:
+
+```markdown
+# FSESC6.7 Pro Configuration Setup
+
+## 1. Install VESC Tool
+- Download from: https://vesc-project.com/vesc_tool
+- Version 6.02 or later
+- Install for your operating system
+
+## 2. Connect FSESC
+- Connect via USB or CAN adapter
+- Power on the FSESC
+- Open VESC Tool
+
+## 3. Basic Configuration
+- Connect to FSESC
+- Go to Setup → General
+- Set motor type: FOC
+- Configure motor parameters
+- Set current limits
+- Configure CAN bus settings
+
+## 4. Motor Calibration
+- Go to Setup → Motor
+- Run motor detection
+- Set motor parameters
+- Test motor rotation
+
+## 5. CAN Bus Setup
+- Configure CAN ID for each ESC
+- Set baud rate (typically 500k)
+- Test CAN communication
 ```
 
 ## Configuration Files
