@@ -1,0 +1,3 @@
+# udev rule for LDROBOT LiDAR (CP2102 USB-UART bridge)
+# Creates symlink /dev/ldlidar for easy access
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="ldlidar", MODE="0666"

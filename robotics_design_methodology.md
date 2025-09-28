@@ -22,6 +22,26 @@ _Last updated: 2025-09-03_
 - **Mast**:
   - LS2015 carbon fiber survey pole, detachable for travel.
   - Provides height for OAK-D camera without heavy frame extensions.
+  - 32 mm diameter; segmented: 3 × 0.45 m sections + 1 × 0.37 m section.
+  - Target overall system height ≈ 60 in using partial mast (not full 1.72 m).
+  - Preferred configs for stiffness/portability:
+    - 3 × 0.45 m = 1.35 m (~53 in) plus deck/wheel height.
+    - 0.45 + 0.45 + 0.37 m = 1.27 m (~50 in) when lower CoG is desired.
+  - Keep unused section(s) detached to meet venue/transport constraints.
+
+### LIDAR Mounting Strategy
+- **Height Target**: Mount planar LIDAR at 6–8 in (15–20 cm) above ground, parallel to floor (0–2° tilt).
+- **Option A — Dedicated micro-deck (recommended for 360°)**:
+  - Add a small LIDAR-only plate between top deck and mast plate (25–50 mm standoffs).
+  - Center the LIDAR on the plate with 360° clearance; route cables downward through the plate.
+  - Place the mast clamp/plate behind the LIDAR; keep mast center ≥ 50–70 mm behind LIDAR center.
+  - Note: A 32 mm mast behind the sensor creates a rear blind sector. If mast center is ~50 mm behind the LIDAR center, the occlusion is ~37°; at ~100 mm, ~18°. Mask this sector in mapping as needed.
+- **Option B — Mast mount (for co-location constraints)**:
+  - Use a 32 mm mast clamp and a forward-offset arm (50–70 mm) so the mast does not intersect the LIDAR scan plane.
+  - Maintain required co-location with the LD500 kit’s sensor (keep within 1–4 in), ensuring their relative transform is rigid and short.
+  - Ensure unobstructed forward/side views; accept a small rear blind sector and account for it in SLAM/localization.
+  - Keep tilt within 0–2° and avoid placing reflective hardware in the scan plane.
+
 
 ## 3. Electrical and Wiring Methodology
 - **Power Topology**:
