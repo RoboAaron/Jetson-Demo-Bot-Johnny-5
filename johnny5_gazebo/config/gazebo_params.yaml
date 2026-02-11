@@ -1,0 +1,14 @@
+# Gazebo simulation parameters for Johnny 5
+# Override these when launching for different test scenarios.
+
+gazebo:
+  ros__parameters:
+    # Physics
+    max_step_size: 0.001
+    real_time_factor: 1.0
+
+    # Robot spawn pose
+    spawn_x: 0.0
+    spawn_y: 0.0
+    spawn_z: 0.15
+    spawn_yaw: 0.0

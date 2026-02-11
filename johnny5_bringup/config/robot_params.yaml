@@ -1,0 +1,30 @@
+# Johnny 5 robot parameters
+# Central config for physical robot constants used across packages.
+
+johnny5:
+  ros__parameters:
+    # Physical dimensions
+    wheel_radius: 0.08255        # 6.5" hoverboard hub, meters
+    wheel_separation: 0.50       # track width center-to-center, meters
+    chassis_length: 0.35         # x dimension, meters
+    chassis_width: 0.30          # y dimension, meters
+
+    # Motor limits (FSESC6.7 Pro)
+    max_motor_current: 50.0      # amps
+    max_battery_voltage: 42.0    # 10S LiPo fully charged
+    min_battery_voltage: 30.0    # 10S LiPo cutoff
+    motor_poles: 14              # hoverboard hub motor
+
+    # Velocity limits
+    max_linear_velocity: 3.5     # m/s (~8 mph target)
+    max_angular_velocity: 3.0    # rad/s
+
+    # CAN bus
+    can_interface: "can0"
+    can_baudrate: 500000
+    left_esc_can_id: 1
+    right_esc_can_id: 2
+
+    # Safety
+    max_tilt_angle: 0.52         # ~30 deg before emergency stop
+    watchdog_timeout_ms: 500
