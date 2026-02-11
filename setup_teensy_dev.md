@@ -39,8 +39,11 @@
 Open Arduino IDE → Tools → Manage Libraries and install:
 
 #### Essential Libraries
-- **BNO055** (by Adafruit) - IMU sensor library
-- **CAN** (by Thomas Barth) - CAN bus communication
+- **SparkFun BNO08x Arduino Library** (by SparkFun) - BNO085 IMU sensor library
+  ⚠️  NOTE: The robot uses a **BNO085**, NOT a BNO055. These are different chips
+  with incompatible libraries. Use the SparkFun BNO08x library, NOT Adafruit_BNO055.
+  See `firmware/FIRMWARE_DESIGN.md` §2 for full comparison.
+- **FlexCAN_T4** (by tonton81) - CAN bus for Teensy 4.x (replaces generic CAN library)
 - **Wire** (built-in) - I2C communication
 - **SPI** (built-in) - SPI communication
 - **EEPROM** (built-in) - Configuration storage
@@ -119,36 +122,60 @@ void loop() {
 ## 7. Robot-Specific Configuration
 
 ### IMU Setup (BNO085)
-```cpp
-#include <Wire.h>
-#include <Adafruit_BNO055.h>
+The robot uses a **BNO085** (SparkFun BNO08x library), not the BNO055.
+The BNO085 uses a report-based interface — you request the data type you want
+(rotation vector, accelerometer, etc.) rather than reading registers directly.
 
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
+```cpp
+// ⚠️  Use SparkFun BNO08x library — NOT Adafruit_BNO055
+#include <Wire.h>
+#include <SparkFun_BNO08x_Arduino_Library.h>
+
+BNO08x imu;
 
 void setup() {
-  if(!bno.begin()) {
-    Serial.println("BNO055 not detected!");
-    while(1);
+  Wire.begin();
+  if (!imu.begin(0x4A, Wire)) {   // 0x4A = default I2C address (SA0=GND)
+    Serial.println("BNO085 not detected! Check wiring.");
+    while (1);
   }
-  bno.setExtCrystalUse(true);
+  // Request ARVR-stabilized rotation vector @ 200 Hz (5000 µs)
+  imu.enableRotationVector(5000);
+  Serial.println("BNO085 OK");
+}
+
+void loop() {
+  if (imu.wasReset()) {
+    imu.enableRotationVector(5000);  // Re-enable reports after reset
+  }
+  if (imu.getSensorEvent() &&
+      imu.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+    float pitch = imu.getRoll();   // axis mapping depends on mounting
+    Serial.println(pitch);
+  }
 }
 ```
 
-### CAN Bus Setup
+### CAN Bus Setup (FlexCAN_T4 for Teensy 4.x)
 ```cpp
-#include <CAN.h>
+// Use FlexCAN_T4 — NOT the generic "CAN" library (Thomas Barth)
+// FlexCAN_T4 supports the Teensy 4.1's native CAN FD controller.
+#include <FlexCAN_T4.h>
+
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can;
 
 void setup() {
-  CAN.begin(500E3); // 500 kbps
+  can.begin();
+  can.setBaudRate(500000);  // 500 kbps — matches FSESC setup
   Serial.begin(115200);
 }
 
 void loop() {
-  // Send CAN message
-  CAN.beginPacket(0x123);
-  CAN.write(0x01);
-  CAN.write(0x02);
-  CAN.endPacket();
+  CAN_message_t msg;
+  if (can.read(msg)) {
+    // Process incoming frame
+    Serial.print("ID: "); Serial.println(msg.id, HEX);
+  }
 }
 ```
 

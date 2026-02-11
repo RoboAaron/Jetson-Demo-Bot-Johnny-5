@@ -30,15 +30,24 @@ The PRD is distributed across:
 
 ### Phase 2 — Embedded / Balance Control (Teensy)
 
-- [ ] **[FIRMWARE]** Write Teensy 4.1 firmware skeleton (PlatformIO project setup)
-- [ ] **[FIRMWARE]** Implement BNO085 IMU data acquisition (I2C, BNO085 library)
-- [ ] **[FIRMWARE]** Implement complementary/Kalman filter for pitch/roll estimation
-- [ ] **[FIRMWARE]** Implement PID balance controller (upright balance loop)
-- [ ] **[FIRMWARE]** Implement FSESC CAN bus interface (send motor torque commands)
-- [ ] **[FIRMWARE]** Add watchdog timer and e-stop handler on Teensy
-- [ ] **[FIRMWARE]** Add serial debug output for balance state (gains, pitch, output)
+- [x] **[FIRMWARE]** Write Teensy 4.1 firmware skeleton (PlatformIO project setup)
+      → `firmware/teensy_balance/` — see `firmware/FIRMWARE_DESIGN.md`
+- [x] **[FIRMWARE]** Implement BNO085 IMU data acquisition (SparkFun BNO08x library via I2C)
+      → `src/imu_bno085.h/.cpp`; uses ARVR-stabilized rotation vector report @ 200 Hz
+- [x] **[FIRMWARE]** Implement PID balance controller (upright balance loop)
+      → `src/balance_pid.h/.cpp`; D-on-measurement, integral anti-windup
+- [x] **[FIRMWARE]** Implement FSESC CAN bus interface (current commands + status feedback)
+      → `src/vesc_can.h/.cpp`; VESC open protocol, FlexCAN_T4, 500 kbps
+- [x] **[FIRMWARE]** Add serial debug output and minimal tuning CLI
+      → `main.cpp`; 'e' enable, '+'/'-' Kp adjust, 'r' reset integrator
+- [ ] **[FIRMWARE]** Complement/Kalman filter — deferred; BNO085 ARVR report is already fused
+- [ ] **[HARDWARE]** Verify IMU mounting orientation (pitch sign convention, see PITCH_INVERT in config.h)
+- [ ] **[HARDWARE]** Verify motor direction convention (which CAN ID is left/right; + = forward?)
+- [ ] **[HARDWARE]** Tune PID gains on physical hardware (Kp, Ki, Kd placeholders in config.h)
+- [ ] **[HARDWARE]** Measure and set PITCH_TRIM_DEG (actual upright balance point)
 - [ ] **[TEST]** Manual bench test: verify IMU reads correct orientation
 - [ ] **[TEST]** Motor spin test: verify CAN commands drive both motors correctly
+- [ ] **[TEST]** Add watchdog / VESC heartbeat timeout test
 
 ### Phase 3 — Jetson / ROS 2 Core
 
