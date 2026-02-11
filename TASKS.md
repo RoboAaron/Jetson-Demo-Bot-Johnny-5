@@ -1,121 +1,84 @@
 # Project Tasks
 _Last updated: 2026-02-11_
 
-## PRD Summary
-
-**Project**: Jetson Self-Balancing Robot (Johnny-5)
-**Goal**: Carry-on sized, two-wheeled self-balancing robot (~8 mph) powered by NVIDIA Jetson AGX Orin, demonstrating 8 core AI/robotics capabilities.
-
-The PRD is distributed across:
-- `robotics_project_overview.md` — goals, hardware, software stack
-- `robotics_design_methodology.md` — design principles, iteration phases
-- `README.md` — full installation guide and architecture
-- `software_extensions.md` — complete software dependency reference
+> **Important**: The authoritative PRD and task management system lives in
+> `docs/delivery/` on the **`feature/spi-migration`** branch — not on `master`.
+> This file is a summary view. For full task details, consult those documents.
+>
+> This file was initially written from the wrong branch (`master`) and contained
+> inaccurate information. It has been corrected to reflect the real project state.
 
 ---
 
-## Development Phases
+## PRD System Location
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| Phase 1 | Mechanical mock-up: plates, mounts, wiring dry-run | In progress (hardware) |
-| Phase 2 | Balance testing: Teensy + FSESC only | Not started |
-| Phase 3 | Jetson integration: vision, SLAM, navigation | Not started |
-| Phase 4 | Autonomy demos: human-follow, voice, teleoperation | Not started |
-| Phase 5 | Safety validation: e-stop, recovery routines | Not started |
+| File | Description |
+|------|-------------|
+| `docs/delivery/backlog.md` | Single source of truth — 16 PBIs with status |
+| `docs/delivery/1/prd.md` | PBI-1: Core Teensy firmware |
+| `docs/delivery/1/tasks.md` | Tasks 1-1 through 1-5 |
+| `docs/delivery/4/prd.md` | PBI-4: Rock-solid balancing (99%+ reliability) |
+| `docs/delivery/4/tasks.md` | Tasks 4-1 through 4-6 |
+| `docs/delivery/2–16/prd.md` | PRDs for all other PBIs |
 
----
+Active development branch: **`feature/spi-migration`**
 
-## Task Backlog
-
-### Phase 2 — Embedded / Balance Control (Teensy)
-
-- [x] **[FIRMWARE]** Write Teensy 4.1 firmware skeleton (PlatformIO project setup)
-      → `firmware/teensy_balance/` — see `firmware/FIRMWARE_DESIGN.md`
-- [x] **[FIRMWARE]** Implement BNO085 IMU data acquisition (SparkFun BNO08x library via I2C)
-      → `src/imu_bno085.h/.cpp`; uses ARVR-stabilized rotation vector report @ 200 Hz
-- [x] **[FIRMWARE]** Implement PID balance controller (upright balance loop)
-      → `src/balance_pid.h/.cpp`; D-on-measurement, integral anti-windup
-- [x] **[FIRMWARE]** Implement FSESC CAN bus interface (current commands + status feedback)
-      → `src/vesc_can.h/.cpp`; VESC open protocol, FlexCAN_T4, 500 kbps
-- [x] **[FIRMWARE]** Add serial debug output and minimal tuning CLI
-      → `main.cpp`; 'e' enable, '+'/'-' Kp adjust, 'r' reset integrator
-- [ ] **[FIRMWARE]** Complement/Kalman filter — deferred; BNO085 ARVR report is already fused
-- [ ] **[HARDWARE]** Verify IMU mounting orientation (pitch sign convention, see PITCH_INVERT in config.h)
-- [ ] **[HARDWARE]** Verify motor direction convention (which CAN ID is left/right; + = forward?)
-- [ ] **[HARDWARE]** Tune PID gains on physical hardware (Kp, Ki, Kd placeholders in config.h)
-- [ ] **[HARDWARE]** Measure and set PITCH_TRIM_DEG (actual upright balance point)
-- [ ] **[TEST]** Manual bench test: verify IMU reads correct orientation
-- [ ] **[TEST]** Motor spin test: verify CAN commands drive both motors correctly
-- [ ] **[TEST]** Add watchdog / VESC heartbeat timeout test
-
-### Phase 3 — Jetson / ROS 2 Core
-
-- [ ] **[ROS2]** Create `ros2_ws/` workspace structure in repo
-- [ ] **[ROS2]** Create `balance_controller` ROS 2 package (subscribes to IMU, publishes cmd_vel)
-- [ ] **[ROS2]** Create `sensor_fusion` ROS 2 package (IMU + odometry → EKF via robot_localization)
-- [ ] **[ROS2]** Create `jetson_bringup` launch package with top-level `robot.launch.py`
-- [ ] **[ROS2]** Create URDF/xacro robot description (base plate, mast, wheel geometry)
-- [ ] **[ROS2]** Integrate OAK-D Pro via `depthai-ros` package (depth + RGB topics)
-- [ ] **[ROS2]** Configure SLAM Toolbox for online mapping (2D lidar via ldrobot_lidar_ros2)
-- [ ] **[ROS2]** Configure Nav2 with robot-specific footprint and costmap params
-- [ ] **[ROS2]** Write ROS 2 → Teensy bridge node (translates `/cmd_vel` to CAN commands)
-- [ ] **[SCRIPT]** Create `install_robot_software.sh` (automated full-stack installer)
-- [ ] **[SCRIPT]** Create `setup_python_env.sh` (Python virtualenv for non-ROS tools)
-
-### Phase 4 — Autonomy Demos
-
-- [ ] **[DEMO]** Human following: person detection (OAK-D + MobileNet/YOLOv8), proportional follower node
-- [ ] **[DEMO]** Gesture control: hand landmark detection, gesture-to-command mapping
-- [ ] **[DEMO]** Conversational companion: Whisper ASR pipeline + local LLM (llama.cpp) + TTS
-- [ ] **[DEMO]** Wake word detection: Porcupine integration with ReSpeaker array
-- [ ] **[DEMO]** Object recognition: YOLOv8 inference on Jetson (TensorRT-optimized)
-- [ ] **[DEMO]** Remote teleoperation: Flask + WebSocket web UI with gamepad support
-- [ ] **[DEMO]** VR teleoperation: OpenVR / WebXR interface (stretch goal)
-- [ ] **[DEMO]** Autonomous waypoint navigation: Nav2 goal sending from web UI
-
-### Phase 5 — Safety & Reliability
-
-- [ ] **[SAFETY]** Fall detection: IMU tilt threshold → motor stop + alarm
-- [ ] **[SAFETY]** Auto-balance recovery: controlled re-stand-up sequence
-- [ ] **[SAFETY]** Battery voltage monitoring: low-voltage cutoff warning via ROS topic
-- [ ] **[SAFETY]** Software e-stop: `/emergency_stop` ROS service disables all actuators
-- [ ] **[SAFETY]** Watchdog heartbeat: Jetson → Teensy keepalive; motors stop if lost
-- [ ] **[SAFETY]** systemd service for robot auto-start on Jetson boot
-
-### Infrastructure / Repo Health
-
-- [ ] **[INFRA]** Add GitHub Issues templates (bug, feature, hardware-issue)
-- [ ] **[INFRA]** Add CI workflow (lint Python, build ROS 2 packages in Docker)
-- [ ] **[INFRA]** Add pre-commit hooks (flake8, black, clang-format for C++)
-- [ ] **[DOCS]** Document ROS 2 topic/service interface contracts
-- [ ] **[DOCS]** Add wiring diagram as editable source (KiCad or draw.io)
-- [ ] **[DOCS]** Add CAD files or links (Onshape) for chassis plates
+See `firmware/FIRMWARE_DESIGN.md` for firmware architecture decisions and stability assessment.
 
 ---
 
-## Immediately Workable Tasks (no hardware required)
+## PBI Backlog Status
 
-The following tasks can be done in this repo right now, without physical hardware:
-
-1. **Teensy firmware skeleton** — PlatformIO project with BNO085 stub and CAN stub
-2. **ROS 2 workspace + balance_controller package** — Node scaffold, CMakeLists, package.xml
-3. **URDF robot description** — Geometry model for visualization in RViz
-4. **`install_robot_software.sh`** — Automated installer (from software_extensions.md)
-5. **`setup_python_env.sh`** — Python virtualenv setup script
-6. **`jetson_bringup` launch package** — Top-level launch file wiring all nodes together
-7. **CI workflow** — GitHub Actions to build ROS 2 packages and lint code
-8. **GitHub Issues templates** — Standard templates for tracking hardware and software issues
+| ID | Status | Summary |
+|----|--------|---------|
+| 1 | ✅ Agreed / Mostly Done | Core Teensy firmware: IMU + PID balance, USB serial, PS3 via Jetson |
+| 2 | ❌ Rejected | SPI migration — abandoned; I2C at 400Hz is sufficient |
+| 3 | Proposed | Tip-over safety limits (±30° auto-stop) |
+| **4** | **🔄 InProgress** | **Rock-solid balancing (99%+ reliability)** |
+| 5 | Proposed | Prioritize 8 demo use cases |
+| 6 | Proposed | Aluminum chassis build and CoG rebalancing |
+| 7 | Proposed | Isaac Sim URDF/SDF model and simulation |
+| 8–15 | Proposed | 8 core demos (Vision, Human Following, Conversational AI, Object Recognition, Teleoperation, Sensor Fusion, Voice Command, Safety+Recovery) |
+| 16 | Proposed | SLAM with LDROBOT STL-19P/D500 + SLAM Toolbox |
 
 ---
 
-## Done
+## PBI-1 Task Status (Core Firmware)
 
-- [x] Hardware BOM and cost tracking (`robotics_inventory_costs.md`, `.csv`)
-- [x] Project overview and design methodology documentation
-- [x] Software stack reference (`software_extensions.md`)
-- [x] Setup guides: Teensy, FSESC, Ubuntu, Windows
-- [x] LiDAR ROS 2 package (`ldrobot_lidar_ros2/`) with launch files and SLAM config
-- [x] Quick reference command guide
-- [x] Power wiring diagram (PDF)
-- [x] Installation verification script (`test_installations.py`)
+| Task | Status | Description |
+|------|--------|-------------|
+| 1-1 | ✅ Done | Teensy project skeleton |
+| 1-2 | ✅ Done | IMU reading + PID balancing (400Hz I2C, Kp=1.50, Ki=0.00, Kd=0.03) |
+| 1-3 | Proposed | USB serial interface with Jetson |
+| 1-4 | Proposed | PS3 remote control integration |
+| 1-5 | Proposed | Mode blending and failsafes |
+| 1-E2E | Proposed | End-to-end CoS test |
+
+---
+
+## PBI-4 Task Status (Rock-Solid Balancing) — Active Focus
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 4-1 | ✅ Review | Cascaded velocity control Phase 1 + motor direction fix |
+| **4-2** | **🔄 InProgress** | Fix velocity PID sign (REVERSE mode), deadband thrashing, input clamping |
+| 4-3 | Proposed | Systematic PID tuning for stability |
+| 4-4 | Proposed | Sensor fusion (Kalman/complementary filter) |
+| 4-5 | Proposed | Add Kd_vel > 0 to eliminate 14Hz chattering |
+| 4-6 | Proposed | Comprehensive scenario testing (99%+ reliability validation) |
+| 4-E2E | Proposed | End-to-end CoS test |
+
+**Current baseline**: 30–40% success rate, 30+ second runs achieved, chattering at ~14Hz.
+**Active firmware**: `teensy_balance_cascaded/teensy_balance_cascaded.ino` on `feature/spi-migration`.
+
+---
+
+## Immediately Workable Tasks
+
+Tasks that can be started now, in priority order:
+
+1. **[4-2]** Fix velocity PID sign + deadband in `teensy_balance_cascaded.ino`
+2. **[4-3]** Systematic PID re-tuning after 4-2 is verified on hardware
+3. **[4-5]** Add Kd_vel > 0 to eliminate motor chattering
+4. **[1-3]** USB serial interface with Jetson (needed for all demos)
+5. **[PBI-5]** Prioritize and sequence the 8 demo use cases before starting PBIs 8–15

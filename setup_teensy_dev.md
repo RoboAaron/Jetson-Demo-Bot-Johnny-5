@@ -39,13 +39,14 @@
 Open Arduino IDE → Tools → Manage Libraries and install:
 
 #### Essential Libraries
-- **SparkFun BNO08x Arduino Library** (by SparkFun) - BNO085 IMU sensor library
-  ⚠️  NOTE: The robot uses a **BNO085**, NOT a BNO055. These are different chips
-  with incompatible libraries. Use the SparkFun BNO08x library, NOT Adafruit_BNO055.
-  See `firmware/FIRMWARE_DESIGN.md` §2 for full comparison.
-- **FlexCAN_T4** (by tonton81) - CAN bus for Teensy 4.x (replaces generic CAN library)
+- **Adafruit BNO08x** (by Adafruit) - BNO085 IMU sensor library
+  ⚠️  NOTE: The robot uses a **BNO085**, NOT a BNO055. These are different chips.
+  The correct library is **Adafruit BNO08x** (`Adafruit_BNO08x.h`).
+  The SparkFun BNO08x library conflicts with Teensy's USB stack — do not use it.
+  See `firmware/FIRMWARE_DESIGN.md` §3 for the full decision record.
+- **VescUart** - VESC serial UART communication (motor controller interface)
+- **PID** (by Brett Beauregard, `PID_v1.h`) - PID controller library
 - **Wire** (built-in) - I2C communication
-- **SPI** (built-in) - SPI communication
 - **EEPROM** (built-in) - Configuration storage
 
 #### Optional Libraries
@@ -122,60 +123,68 @@ void loop() {
 ## 7. Robot-Specific Configuration
 
 ### IMU Setup (BNO085)
-The robot uses a **BNO085** (SparkFun BNO08x library), not the BNO055.
-The BNO085 uses a report-based interface — you request the data type you want
-(rotation vector, accelerometer, etc.) rather than reading registers directly.
+The robot uses a **BNO085** with the **Adafruit BNO08x** library (`Adafruit_BNO08x.h`).
+⚠️  Do NOT use `Adafruit_BNO055` (different chip) or `SparkFun BNO08x` (conflicts with
+Teensy USB stack). See `firmware/FIRMWARE_DESIGN.md` for the full decision record.
 
 ```cpp
-// ⚠️  Use SparkFun BNO08x library — NOT Adafruit_BNO055
+// Use Adafruit BNO08x library — the actual library used in this project
 #include <Wire.h>
-#include <SparkFun_BNO08x_Arduino_Library.h>
+#include <Adafruit_BNO08x.h>
 
-BNO08x imu;
+Adafruit_BNO08x bno08x(-1);  // -1 = no reset pin (I2C mode)
+sh2_SensorValue_t sensorValue;
 
 void setup() {
   Wire.begin();
-  if (!imu.begin(0x4A, Wire)) {   // 0x4A = default I2C address (SA0=GND)
+  Wire.setClock(400000);  // 400kHz I2C
+  if (!bno08x.begin_I2C()) {
     Serial.println("BNO085 not detected! Check wiring.");
     while (1);
   }
-  // Request ARVR-stabilized rotation vector @ 200 Hz (5000 µs)
-  imu.enableRotationVector(5000);
+  // Enable rotation vector report at 400Hz (2500 µs)
+  bno08x.enableReport(SH2_ROTATION_VECTOR, 2500);
   Serial.println("BNO085 OK");
 }
 
 void loop() {
-  if (imu.wasReset()) {
-    imu.enableRotationVector(5000);  // Re-enable reports after reset
-  }
-  if (imu.getSensorEvent() &&
-      imu.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-    float pitch = imu.getRoll();   // axis mapping depends on mounting
-    Serial.println(pitch);
+  if (bno08x.getSensorEvent(&sensorValue)) {
+    if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+      // Convert quaternion to roll/pitch/yaw — see active firmware for full conversion
+      float qr = sensorValue.un.rotationVector.real;
+      float qi = sensorValue.un.rotationVector.i;
+      float qj = sensorValue.un.rotationVector.j;
+      float qk = sensorValue.un.rotationVector.k;
+      // roll = atan2(2*(qr*qi + qj*qk), 1 - 2*(qi*qi + qj*qj))  [radians → degrees]
+    }
   }
 }
 ```
 
-### CAN Bus Setup (FlexCAN_T4 for Teensy 4.x)
-```cpp
-// Use FlexCAN_T4 — NOT the generic "CAN" library (Thomas Barth)
-// FlexCAN_T4 supports the Teensy 4.1's native CAN FD controller.
-#include <FlexCAN_T4.h>
+### VESC Communication (UART)
+The robot uses **VescUart** (UART serial), not CAN bus.
 
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can;
+```cpp
+#include <VescUart.h>
+
+VescUart vescLeft;
+VescUart vescRight;
 
 void setup() {
-  can.begin();
-  can.setBaudRate(500000);  // 500 kbps — matches FSESC setup
-  Serial.begin(115200);
+  Serial1.begin(115200);  // Left VESC UART
+  Serial2.begin(115200);  // Right VESC UART
+  vescLeft.setSerialPort(&Serial1);
+  vescRight.setSerialPort(&Serial2);
 }
 
 void loop() {
-  CAN_message_t msg;
-  if (can.read(msg)) {
-    // Process incoming frame
-    Serial.print("ID: "); Serial.println(msg.id, HEX);
+  // Read encoder feedback
+  if (vescLeft.getVescValues()) {
+    float erpm = vescLeft.data.rpm;
+    float current = vescLeft.data.avgMotorCurrent;
   }
+  // Send current command
+  vescLeft.setCurrent(2.5);   // 2.5 Amps
 }
 ```
 
