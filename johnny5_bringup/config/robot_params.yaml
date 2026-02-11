@@ -1,13 +1,17 @@
 # Johnny 5 robot parameters
 # Central config for physical robot constants used across packages.
+#
+# NOTE: Values marked [TENTATIVE] are estimated from photos using the
+# 8x8" base plate as a reference. Measure on hardware to verify.
 
 johnny5:
   ros__parameters:
     # Physical dimensions
-    wheel_radius: 0.08255        # 6.5" hoverboard hub, meters
-    wheel_separation: 0.50       # track width center-to-center, meters
-    chassis_length: 0.35         # x dimension, meters
-    chassis_width: 0.30          # y dimension, meters
+    wheel_radius: 0.08255        # 6.5" hoverboard hub — confirmed from BOM
+    wheel_separation: 0.30       # [TENTATIVE] ~12" — 8" plate + 2x motor mount offset
+    chassis_length: 0.203        # 8" — confirmed by user
+    chassis_width: 0.203         # 8" — confirmed by user
+    chassis_height: 0.28         # [TENTATIVE] ~11" — 3 plates + standoffs (user: 10-12")
 
     # Motor limits (FSESC6.7 Pro)
     max_motor_current: 50.0      # amps

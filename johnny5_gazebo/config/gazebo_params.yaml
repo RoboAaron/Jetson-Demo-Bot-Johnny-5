@@ -10,5 +10,5 @@ gazebo:
     # Robot spawn pose
     spawn_x: 0.0
     spawn_y: 0.0
-    spawn_z: 0.15
+    spawn_z: 0.02
     spawn_yaw: 0.0

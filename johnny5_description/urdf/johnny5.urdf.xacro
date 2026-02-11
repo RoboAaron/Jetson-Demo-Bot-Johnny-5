@@ -10,31 +10,48 @@
   <!--   base_link = center of wheel axle                          -->
   <!-- ============================================================ -->
 
-  <!-- Global properties -->
-  <xacro:property name="wheel_radius"     value="0.08255"/>  <!-- 6.5" / 2 -->
-  <xacro:property name="wheel_width"      value="0.055"/>
-  <xacro:property name="wheel_mass"       value="1.8"/>      <!-- hoverboard hub motor -->
-  <xacro:property name="wheel_separation" value="0.50"/>     <!-- track width center-to-center -->
+  <!-- ============================================================ -->
+  <!-- TENTATIVE DIMENSIONS - Estimated from photos + 8x8" base    -->
+  <!-- plates. All values marked [TENTATIVE] need physical          -->
+  <!-- measurement on hardware to verify.                           -->
+  <!-- ============================================================ -->
 
-  <xacro:property name="chassis_length"   value="0.35"/>     <!-- x -->
-  <xacro:property name="chassis_width"    value="0.30"/>     <!-- y -->
-  <xacro:property name="chassis_height"   value="0.20"/>     <!-- z total deck stack -->
-  <xacro:property name="chassis_mass"     value="8.0"/>      <!-- batteries+ESC+Jetson+structure -->
-  <xacro:property name="chassis_z_offset" value="0.02"/>     <!-- center of mass above axle -->
+  <!-- Simulation mode (set via xacro arg: use_sim:=true) -->
+  <xacro:arg name="use_sim" default="false"/>
+  <xacro:property name="use_sim" value="$(arg use_sim)"/>
 
-  <xacro:property name="mast_radius"      value="0.016"/>    <!-- 32mm diameter -->
-  <xacro:property name="mast_height"      value="1.35"/>     <!-- 3 x 0.45m sections -->
-  <xacro:property name="mast_mass"        value="0.5"/>
+  <!-- Wheels: 6.5" Gyroor hoverboard hub motors (BOM-confirmed) -->
+  <xacro:property name="wheel_radius"     value="0.08255"/>  <!-- 6.5" / 2 — confirmed from BOM -->
+  <xacro:property name="wheel_width"      value="0.055"/>    <!-- [TENTATIVE] ~2.2", needs measurement -->
+  <xacro:property name="wheel_mass"       value="1.8"/>      <!-- [TENTATIVE] hoverboard hub motor w/ magnets+windings -->
+  <xacro:property name="wheel_separation" value="0.30"/>     <!-- [TENTATIVE] ~12" — 8" plate + 2x motor mount offset -->
 
-  <xacro:property name="lidar_x"          value="0.10"/>     <!-- forward of base_link -->
-  <xacro:property name="lidar_z"          value="0.10"/>     <!-- ~18cm above ground -->
+  <!-- Chassis: 3x 8x8" aluminum plates with standoffs -->
+  <xacro:property name="chassis_length"   value="0.203"/>    <!-- 8" = 203mm — confirmed by user -->
+  <xacro:property name="chassis_width"    value="0.203"/>    <!-- 8" = 203mm — confirmed by user -->
+  <xacro:property name="chassis_height"   value="0.28"/>     <!-- [TENTATIVE] ~11" — 3 plates + standoffs, user says 10-12" -->
+  <xacro:property name="chassis_mass"     value="8.0"/>      <!-- [TENTATIVE] batteries+ESC+Jetson+3 plates+standoffs -->
+  <xacro:property name="chassis_z_offset" value="0.14"/>     <!-- [TENTATIVE] chassis_height/2, assumes bottom plate at axle -->
 
-  <xacro:property name="imu_x"            value="0.0"/>
-  <xacro:property name="imu_z"            value="0.12"/>     <!-- upper deck -->
+  <!-- Mast: LS2015 carbon fiber survey pole, 4-section, 1.8m total -->
+  <xacro:property name="mast_radius"      value="0.016"/>    <!-- 32mm diameter — from BOM (LS2015) -->
+  <xacro:property name="mast_height"      value="1.35"/>     <!-- 3 x 0.45m sections (standard config) -->
+  <xacro:property name="mast_mass"        value="0.5"/>      <!-- [TENTATIVE] carbon fiber pole + connectors -->
+  <xacro:property name="mast_x_offset"    value="-0.05"/>    <!-- [TENTATIVE] slightly behind center -->
+  <xacro:property name="mast_y_offset"    value="0.07"/>     <!-- [TENTATIVE] offset to one side per photos -->
 
-  <xacro:property name="camera_z"         value="1.27"/>     <!-- mast top above axle -->
+  <!-- LiDAR: LDROBOT STL-19P — not yet mounted, position TBD -->
+  <xacro:property name="lidar_x"          value="0.10"/>     <!-- [TENTATIVE] forward of base_link -->
+  <xacro:property name="lidar_z"          value="0.10"/>     <!-- [TENTATIVE] design spec: 6-8" above ground -->
 
-  <xacro:property name="use_sim" value="false"/>
+  <!-- IMU: BNO085 on Teensy breakout, upper deck area -->
+  <xacro:property name="imu_x"            value="0.0"/>      <!-- [TENTATIVE] assumed centered -->
+  <xacro:property name="imu_z"            value="0.22"/>     <!-- [TENTATIVE] near top plate of 3-plate stack -->
+
+  <!-- Camera: OAK-D Pro at mast top -->
+  <!-- camera_z = chassis_z_offset + chassis_height/2 + mast_height -->
+  <!--         = 0.14 + 0.14 + 1.35 = 1.63m above base_link        -->
+  <xacro:property name="camera_z"         value="1.63"/>     <!-- [TENTATIVE] depends on mast config + chassis height -->
 
   <!-- Include sub-files -->
   <xacro:include filename="$(find johnny5_description)/urdf/chassis.urdf.xacro"/>

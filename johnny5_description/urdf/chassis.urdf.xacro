@@ -35,13 +35,13 @@
     </link>
   </xacro:macro>
 
-  <!-- Mast macro: carbon fiber survey pole -->
+  <!-- Mast macro: carbon fiber survey pole (LS2015) -->
   <xacro:macro name="mast">
     <joint name="chassis_to_mast" type="fixed">
       <parent link="chassis_link"/>
       <child link="mast_link"/>
-      <!-- mast base at top of chassis, slightly behind center -->
-      <origin xyz="-0.05 0 ${chassis_height/2 + mast_height/2}" rpy="0 0 0"/>
+      <!-- [TENTATIVE] mast base at top of chassis; x/y offset estimated from photos -->
+      <origin xyz="${mast_x_offset} ${mast_y_offset} ${chassis_height/2 + mast_height/2}" rpy="0 0 0"/>
     </joint>
 
     <link name="mast_link">

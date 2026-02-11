@@ -34,6 +34,55 @@
     <material>Gazebo/Grey</material>
   </gazebo>
 
+  <!-- ==================== Sim-Only Stabilizers ==================== -->
+  <!-- Invisible frictionless spheres at front/rear prevent the       -->
+  <!-- two-wheeled robot from tipping in Gazebo. ~5mm ground gap     -->
+  <!-- allows ~3.5 deg tilt before contact. No visual = invisible    -->
+  <!-- in RViz. On real hardware, the Teensy balance controller       -->
+  <!-- handles stability; these only exist when use_sim:=true.        -->
+  <xacro:if value="${use_sim}">
+    <link name="front_stabilizer_link">
+      <collision>
+        <geometry><sphere radius="0.005"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.001"/>
+        <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+      </inertial>
+    </link>
+    <joint name="front_stabilizer_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="front_stabilizer_link"/>
+      <!-- z = -(wheel_radius - sphere_radius - 5mm gap) -->
+      <origin xyz="0.09 0 -0.0726" rpy="0 0 0"/>
+    </joint>
+    <gazebo reference="front_stabilizer_link">
+      <mu1>0.0</mu1>
+      <mu2>0.0</mu2>
+      <material>Gazebo/White</material>
+    </gazebo>
+
+    <link name="rear_stabilizer_link">
+      <collision>
+        <geometry><sphere radius="0.005"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.001"/>
+        <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+      </inertial>
+    </link>
+    <joint name="rear_stabilizer_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="rear_stabilizer_link"/>
+      <origin xyz="-0.09 0 -0.0726" rpy="0 0 0"/>
+    </joint>
+    <gazebo reference="rear_stabilizer_link">
+      <mu1>0.0</mu1>
+      <mu2>0.0</mu2>
+      <material>Gazebo/White</material>
+    </gazebo>
+  </xacro:if>
+
   <!-- ==================== Differential Drive ==================== -->
   <!-- Approximates the two-wheeled balance bot for Nav2 testing.   -->
   <!-- On real hardware the Teensy/FSESC handles balance control.   -->

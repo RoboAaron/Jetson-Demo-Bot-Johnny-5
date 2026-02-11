@@ -78,7 +78,7 @@ def generate_launch_description():
                 '-entity', 'johnny5',
                 '-x', '0.0',
                 '-y', '0.0',
-                '-z', '0.15',  # slightly above ground to avoid collision on spawn
+                '-z', '0.02',  # just above ground; base_footprint is ground-plane
             ],
             output='screen',
         ),

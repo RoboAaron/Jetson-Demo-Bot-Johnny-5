@@ -1,8 +1,9 @@
 # Nav2 parameters for Johnny 5
 # Based on ldrobot_lidar_ros2 example config, tuned for robot footprint.
 #
-# Robot footprint: ~0.35m x 0.50m (chassis_length x wheel_separation)
-# Robot radius (circumscribed): 0.22m  (used in costmap)
+# Robot footprint: ~0.203m x 0.355m (chassis + wheels)
+# Robot radius (circumscribed): ~0.22m
+# NOTE: Footprint values are [TENTATIVE] — verify wheel_separation on hardware.
 # LiDAR: LDROBOT STL-19P, 502 ranges, 10Hz, 0.02-25m
 
 controller_server:
@@ -96,7 +97,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.30
+      robot_radius: 0.22            # [TENTATIVE] circumscribed radius of footprint
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -125,7 +126,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: false
-      robot_radius: 0.30
+      robot_radius: 0.22            # [TENTATIVE] circumscribed radius of footprint
       resolution: 0.05
       track_unknown_space: false
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
