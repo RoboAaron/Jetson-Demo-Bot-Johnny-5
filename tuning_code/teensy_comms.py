@@ -4,7 +4,7 @@ Teensy serial communications module.
 
 Shared between the tuning GUI (tuning_code/robot_tuning_gui.py) and the
 Jetson bridge (jetson/jetson_bridge.py) — single source of truth for the
-R: telemetry protocol and J: Jetson motion command protocol.
+R: telemetry protocol and # Jetson motion command protocol.
 
 Telemetry rate: 20 Hz (50 ms intervals, driven by Teensy firmware).
 Baud rate: 2 Mbaud (DEFAULT_BAUD).
@@ -20,8 +20,8 @@ Telemetry formats parsed (all start with 'R:'):
                     Mode:...,Yaw:...,Log:...
 
 Jetson motion command sent TO the Teensy:
-  J:VEL=<m/s>,STEER=<rad/s>   (newline terminated)
-  Requires Teensy firmware support for parsing 'J:' lines.
+  #VEL=<m/s>,STEER=<rad/s>    (newline terminated)
+  Requires Teensy firmware support — see firmware/teensy_balance_cascaded/.
 
 Optional callbacks (called from the reader thread, not the main thread):
   on_disconnect()          fired when the link goes away unexpectedly
@@ -409,8 +409,8 @@ class TeensyComms:
     def send_jetson_command(self, vel_mps: float, steer_rads: float) -> bool:
         """Send a Jetson velocity+steering setpoint to the Teensy.
 
-        Sends: J:VEL=<vel_mps>,STEER=<steer_rads>\n
-        The Teensy firmware must parse 'J:' lines (see firmware/teensy_balance_cascaded).
+        Sends: #VEL=<vel_mps>,STEER=<steer_rads>\n
+        The Teensy firmware parses '#' lines (see firmware/teensy_balance_cascaded/).
 
         Args:
             vel_mps:    forward velocity in m/s  (negative = reverse)
@@ -419,7 +419,7 @@ class TeensyComms:
         """
         if self.ser and self.ser.is_open:
             try:
-                cmd = f"J:VEL={vel_mps:.3f},STEER={steer_rads:.3f}\n"
+                cmd = f"#VEL={vel_mps:.3f},STEER={steer_rads:.3f}\n"
                 self.ser.write(cmd.encode())
                 self.ser.flush()
                 return True
