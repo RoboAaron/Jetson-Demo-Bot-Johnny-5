@@ -1,5 +1,5 @@
 # PBI-5 Tasks: Demo Use Case Prioritization
-_Status: Done | Completed: 2026-02-12_
+_Status: Done | Completed: 2026-02-12 | Updated: 2026-02-13 (ReSpeaker + ESP32 purchased)_
 
 ---
 
@@ -19,7 +19,7 @@ These are not demos themselves but are gates that every demo depends on.
 |------|-------|--------|-------|
 | PBI-4: Rock-solid balance (≥99% reliability) | Firmware | 🔄 InProgress | Core blocker — no demo works on an unstable platform |
 | PBI-1 task 1-3: USB serial Jetson ↔ Teensy | Firmware + SW | ✅ SW done | `#VEL` command + `JetsonBridge` written; needs hardware smoke-test |
-| PBI-1 task 1-4: PS3 controller on Jetson | SW | Proposed | Jetson-side bridge not yet written |
+| PBI-1 task 1-4: PS3 controller via ESP32 | ESP32 FW + ROS 2 | Proposed | ESP32 bridges PS3 BT → USB serial → Jetson `joy_node` → `teleop_twist_joy`; no custom driver needed |
 | PBI-1 task 1-5: Mode blending + failsafes | Firmware + SW | Partial | Watchdog done; full mode-blend TBD |
 | PBI-3: Tip-over auto-stop (±30°) | Firmware | ✅ Done | Firmware already stops motors at ±25° (tighter than spec) |
 | `/odom` publisher in `balance_bridge` | ROS 2 | Proposed | Nav2 requires this; pure SW, no robot needed to write |
@@ -34,8 +34,9 @@ These are not demos themselves but are gates that every demo depends on.
 | NVIDIA Jetson AGX Orin | ✅ Yes | All demos | — |
 | Luxonis OAK-D Pro | ✅ Yes | PBIs 8, 9, 11, 13 | — |
 | LDROBOT STL-19P/D500 lidar | ✅ Implied (package in repo) | PBIs 13, 16 | Confirm physical unit; run `lsusb` for CP2102 `10c4:ea60` |
-| ReSpeaker microphone array | ❌ Not in inventory | PBIs 10, 14 | **Must purchase before starting audio demos** |
-| PS3 controller | ❌ Not in inventory | PBI-1 task 1-4 | Purchase or substitute DS4 / Xbox controller |
+| ReSpeaker microphone array | ✅ Purchased | PBIs 10, 14 | Hardware gap closed — audio demos unblocked |
+| ESP32 (PS3-compatible) | ✅ Purchased | PBI-1 task 1-4 | Bridges PS3 BT → Jetson USB; use `ps3Controller` Arduino lib |
+| PS3 controller | — | PBI-1 task 1-4 | Paired via ESP32 — no direct Jetson BT pairing needed |
 | VR headset | ❌ Not in inventory | PBI-12 (optional path) | Skip VR; implement web-only teleoperation first |
 | Robot arm / manipulator | ❌ Not in inventory | PBI-11 (manipulation path) | Implement tracking-only path; skip manipulation |
 
@@ -49,16 +50,18 @@ PBI-1 1-3/1-5 (serial + modes) ────────────────�
 balance_bridge /odom ────────────────────────────────┼──► ALL DEMOS
 PBI-3 (tip-over, DONE) ──────────────────────────────┘
 
-PBI-16 (lidar SLAM) ─────────────────────────────────┬──► PBI-8 (nav)
-PBI-13 (sensor fusion) ──────────────────────────────┘    PBI-13
+ESP32 (PS3 BT) ──► joy_node ──► teleop_twist_joy ─────┐
+Nav2 ─────────────────────────────────────────────────┼──► twist_mux ──► /cmd_vel ──► balance_bridge
+Web joystick (PBI-12) ────────────────────────────────┘
 
-PBI-16 ──────────────────────────────────────────────────► PBI-13
+PBI-16 (lidar SLAM) ─────────────────────────────────┬──► PBI-8 (nav)
+                                                      └──► PBI-13 (sensor fusion)
 
 OAK-D ROS 2 node ────────────────────────────────────┬──► PBI-9 (follow)
                                                       ├──► PBI-11 (objects)
                                                       └──► PBI-13 (fusion)
 
-PBI-10 (ASR + LLM) ──────────────────────────────────────► PBI-14 (wake word)
+ReSpeaker ──► PBI-10 (ASR + LLM) ───────────────────────► PBI-14 (wake word)
 
 PBI-12 (teleoperation) ──────── independent after foundation
 PBI-15 (safety+recovery) ─────── independent (firmware extension)
@@ -76,6 +79,26 @@ Complete PBI-4, PBI-1 1-3/1-5, `/odom` publisher, `colcon build` smoke-test.
 ---
 
 ### Wave 1 — Quick Wins (maximum value, minimum new hardware)
+
+#### Foundation addition: ESP32 PS3 bridge + `/cmd_vel` mux
+**New work unlocked by ESP32 purchase.** Before physical joystick control can work
+alongside Nav2, a `/cmd_vel` mux must arbitrate between sources.
+
+**Work**:
+- Flash ESP32 with `ps3Controller` Arduino library; emit joystick axes as newline-delimited
+  JSON over USB serial (e.g. `{"lx":0.5,"ly":0.0,"rx":-0.2}`)
+- Write thin ROS 2 node `esp32_joy_node` that reads the serial JSON and publishes
+  `sensor_msgs/Joy` on `/joy`
+- Install `teleop_twist_joy` + configure axes mapping (linear.x = left stick Y,
+  angular.z = right stick X)
+- Install `twist_mux` with priority ordering:
+  1. `/cmd_vel_joy` (highest — manual always wins)
+  2. `/cmd_vel_nav` (Nav2 output)
+  3. `/cmd_vel_web` (web joystick from PBI-12)
+- All three merge into `/cmd_vel` consumed by `balance_bridge`
+- Test: joystick overrides Nav2 mid-run; releasing stick hands back to Nav2
+
+---
 
 #### Demo Priority 1: PBI-15 — Safety + Recovery
 **Why first**: Firmware is already 80% done (±25° auto-stop exists). Adds a compelling
@@ -107,7 +130,7 @@ remote operation for all future testing and is the easiest show-stopping demo.
 
 ---
 
-### Wave 2 — Navigation Infrastructure
+### Wave 2 — Navigation Infrastructure + Audio (parallel tracks)
 
 #### Demo Priority 3: PBI-16 — SLAM (LDROBOT lidar)
 **Why third**: `ldrobot_lidar_ros2` package already in repo and configured. SLAM is
@@ -126,7 +149,26 @@ foundational for PBI-8 and PBI-13. Should be done before investing in Nav2 confi
 
 ---
 
-#### Demo Priority 4: PBI-7 — Isaac Sim / URDF (can parallelize with Wave 2)
+#### Demo Priority 4 (parallel track A): PBI-10 — Conversational Companion (ASR + LLM)
+**Moved up from Wave 4** — ReSpeaker now in inventory; zero dependency on SLAM or OAK-D.
+Can be developed fully in parallel with navigation work.
+
+**Prerequisites**: ReSpeaker connected, Jetson internet access for model download.
+
+**Work**:
+- Connect ReSpeaker; verify with `arecord -l` (expect UAC1.0 device)
+- Install Whisper (`openai-whisper`, run `small.en` on Jetson GPU)
+- Install `llama.cpp` server; pull `Llama-3.2-3B-Instruct.Q4_K_M.gguf` (~2 GB, fits in
+  Jetson AGX Orin's 32 GB unified RAM)
+- Write `voice_bridge` ROS 2 node: ReSpeaker → Whisper STT → LLM → TTS (`piper`) →
+  speaker; publishes recognized commands to `/voice/command` (std_msgs/String)
+- Write `voice_cmd_vel` node: subscribes `/voice/command`, emits to `/cmd_vel_voice`
+  (fed into `twist_mux` at lowest priority — voice < web < joy)
+- Test: "go forward", "stop", "turn left", "follow me" recognized correctly
+
+---
+
+#### Demo Priority 5 (parallel track B): PBI-7 — Isaac Sim / URDF (can parallelize with Wave 2)
 **Why here**: Fully offline — can be worked on while waiting for robot availability.
 URDF enables algorithm testing in simulation, reducing hardware time for PBIs 8–9.
 
@@ -143,8 +185,23 @@ URDF enables algorithm testing in simulation, reducing hardware time for PBIs 8�
 
 ### Wave 3 — Perception + Autonomy
 
-#### Demo Priority 5: PBI-13 — Multi-Sensor Fusion
-**Why fifth**: Brings together the lidar (PBI-16) and OAK-D; improves localization
+#### Demo Priority 6: PBI-14 — Voice Command + Wake Word
+**Moved up from Wave 4** — PBI-10 now in Wave 2; wake word is a direct extension of
+the same `voice_bridge` node.
+
+**Prerequisites**: PBI-10 complete.
+
+**Work**:
+- Add always-listening wake word using `openWakeWord` (open-source, runs on CPU)
+- Keyword: "Hey Johnny" (or similar; can be custom-trained)
+- On detection: activate 5-second Whisper STT window; suppress otherwise
+- Add low-power idle mode: balance controller in standby, only wake engine running
+- Test: wake from 3 m away; ≥90% detection rate; ≤1 false positive per minute
+
+---
+
+#### Demo Priority 7: PBI-13 — Multi-Sensor Fusion
+**Why here**: Brings together the lidar (PBI-16) and OAK-D; improves localization
 accuracy. Natural stepping stone to PBI-8 autonomous navigation.
 
 **Prerequisites**: PBI-16 (lidar SLAM working), OAK-D ROS 2 node, `/odom`.
@@ -157,8 +214,8 @@ accuracy. Natural stepping stone to PBI-8 autonomous navigation.
 
 ---
 
-#### Demo Priority 6: PBI-8 — Vision-Driven Autonomy (Nav2)
-**Why sixth**: The flagship demo. Depends on reliable SLAM (PBI-16) and good odometry
+#### Demo Priority 9: PBI-8 — Vision-Driven Autonomy (Nav2)
+**Why here**: The flagship demo. Depends on reliable SLAM (PBI-16) and good odometry
 (PBI-13). Nav2 stack will not work well on a ±5% odometry estimate.
 
 **Prerequisites**: PBI-13, SLAM map, Nav2 installed.
@@ -172,8 +229,8 @@ accuracy. Natural stepping stone to PBI-8 autonomous navigation.
 
 ---
 
-#### Demo Priority 7: PBI-9 — Human Following + Gesture
-**Why seventh**: OAK-D is already integrated (PBI-13); person detection is an
+#### Demo Priority 10: PBI-9 — Human Following + Gesture
+**Why here**: OAK-D is already integrated (PBI-13); person detection is an
 incremental add. Lower complexity than full Nav2.
 
 **Prerequisites**: PBI-13 (OAK-D node), balance reliable.
@@ -186,37 +243,9 @@ incremental add. Lower complexity than full Nav2.
 
 ---
 
-### Wave 4 — Audio Demos (hardware purchase required)
+### Wave 4 — Object Recognition
 
-**Gate**: Purchase ReSpeaker USB mic array before starting Wave 4.
-**Estimated cost**: ~$60–80 (ReSpeaker 4-mic or 6-mic USB array).
-
-#### Demo Priority 8: PBI-10 — Conversational Companion (ASR + LLM)
-**Prerequisites**: ReSpeaker purchased and connected, Whisper installed on Jetson,
-local LLM (recommend `llama.cpp` with Llama-3.2-3B — fits in Jetson AGX Orin's RAM).
-
-**Work**:
-- Integrate ReSpeaker with ROS 2 (`audio_common` or direct ALSA)
-- Run Whisper `small.en` model for real-time STT (Jetson GPU)
-- Run `llama.cpp` server with a 3B parameter model for response generation
-- Implement conversation loop: listen → STT → LLM → TTS (`piper` or `espeak`)
-- Voice control commands: "go forward", "stop", "turn left/right", "follow me"
-- Test: 5-turn conversation; 3 robot control commands via voice
-
----
-
-#### Demo Priority 9 (final): PBI-14 — Voice Command + Wake Word
-**Prerequisites**: PBI-10 complete, `openWakeWord` or `Porcupine` library.
-
-**Work**:
-- Implement always-listening wake word ("Hey Johnny" or similar)
-- On wake: activate Whisper STT for 5-second command window
-- Idle mode: motors off, Jetson low-power, only wake word engine running
-- Test: wake from 3 m away; 90%+ wake word detection; 0 false positives per minute
-
----
-
-#### Demo Priority 10: PBI-11 — Object Recognition (tracking-only path)
+#### Demo Priority 11: PBI-11 — Object Recognition (tracking-only path)
 **Note**: No manipulator in inventory. Implement as "identify + approach" not "pick up".
 
 **Prerequisites**: OAK-D integrated (PBI-13).
@@ -232,17 +261,19 @@ local LLM (recommend `llama.cpp` with Llama-3.2-3B — fits in Jetson AGX Orin's
 
 | Wave | PBI | Demo | Hardware Gap | Effort Est. | Value |
 |------|-----|------|-------------|-------------|-------|
-| 0 | Foundation | Balance + serial + /odom | None | — | Blocker |
+| 0 | Foundation | Balance + serial + /odom + ESP32 mux | None | — | Blocker |
 | 1 | PBI-15 | Safety + Recovery | None | Small | High |
 | 1 | PBI-12 | Remote Teleoperation | None | Medium | High |
-| 2 | PBI-16 | SLAM (lidar) | Confirm lidar unit | Medium | High |
-| 2 | PBI-7 | Isaac Sim URDF | None (offline) | Medium | Medium |
+| 2A | PBI-16 | SLAM (lidar) | Confirm lidar unit | Medium | High |
+| 2A | PBI-7 | Isaac Sim URDF | None (offline) | Medium | Medium |
+| 2B | PBI-10 | Conversational Companion | ~~Buy ReSpeaker~~ ✅ | Large | High |
+| 3 | PBI-14 | Wake Word | ReSpeaker (from PBI-10) | Small | Medium |
 | 3 | PBI-13 | Multi-Sensor Fusion | None | Medium | High |
 | 3 | PBI-8 | Vision-Driven Autonomy | None | Large | Very High |
 | 3 | PBI-9 | Human Following | None | Medium | High |
-| 4 | PBI-10 | Conversational Companion | **Buy ReSpeaker** | Large | High |
-| 4 | PBI-14 | Wake Word | ReSpeaker (from PBI-10) | Small | Medium |
 | 4 | PBI-11 | Object Recognition | None | Medium | Medium |
+
+**All hardware now in inventory. Zero remaining purchase gates.**
 
 ---
 
@@ -252,6 +283,8 @@ local LLM (recommend `llama.cpp` with Llama-3.2-3B — fits in Jetson AGX Orin's
 |----------|-----------|
 | PBI-12 teleoperation uses web-only (no VR) | VR headset not in inventory; web browser reaches the same demo audience |
 | PBI-11 uses tracking-only (no manipulation) | No arm/manipulator in inventory; no plan to add one |
-| Audio demos (PBIs 10, 14) deferred to Wave 4 | ReSpeaker not in inventory; all other demos have zero additional hardware cost |
-| PBI-7 (Isaac Sim) placed in Wave 2 | Fully offline; enables algorithm development for later waves |
+| PBI-10 + PBI-14 moved from Wave 4 → Waves 2B/3 | ReSpeaker purchased 2026-02-13; audio demos no longer hardware-gated |
+| PS3 via ESP32, not Jetson BT | ESP32 purchased 2026-02-13; use `ps3Controller` Arduino lib + standard `joy_node` + `teleop_twist_joy`; no custom driver needed |
+| `/cmd_vel` mux added to foundation | ESP32 joystick + Nav2 + web all publish `/cmd_vel`; `twist_mux` priority: joy > nav > web > voice |
+| PBI-7 (Isaac Sim) placed in Wave 2A | Fully offline; enables algorithm development for later waves |
 | PBI-16 before PBI-13 before PBI-8 | Clear dependency chain; skipping steps leads to poor Nav2 performance |
