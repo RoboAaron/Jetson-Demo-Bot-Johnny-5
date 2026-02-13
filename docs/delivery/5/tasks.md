@@ -19,11 +19,12 @@ These are not demos themselves but are gates that every demo depends on.
 |------|-------|--------|-------|
 | PBI-4: Rock-solid balance (≥99% reliability) | Firmware | 🔄 InProgress | Core blocker — no demo works on an unstable platform |
 | PBI-1 task 1-3: USB serial Jetson ↔ Teensy | Firmware + SW | ✅ SW done | `#VEL` command + `JetsonBridge` written; needs hardware smoke-test |
-| PBI-1 task 1-4: PS3 controller via ESP32 | ESP32 FW + ROS 2 | Proposed | ESP32 bridges PS3 BT → USB serial → Jetson `joy_node` → `teleop_twist_joy`; no custom driver needed |
-| PBI-1 task 1-5: Mode blending + failsafes | Firmware + SW | Partial | Watchdog done; full mode-blend TBD |
+| PBI-1 task 1-4: PS3 controller via ESP32 | ESP32 FW + ROS 2 | ✅ SW done | `esp32/ps3_bridge/ps3_bridge.ino` + `esp32_joy_node.py` written; needs hardware pairing |
+| PBI-1 task 1-5: Mode blending + failsafes | Firmware + SW | Partial | Watchdog done; `twist_mux` priority arbitration written; full mode-blend TBD |
 | PBI-3: Tip-over auto-stop (±30°) | Firmware | ✅ Done | Firmware already stops motors at ±25° (tighter than spec) |
-| `/odom` publisher in `balance_bridge` | ROS 2 | Proposed | Nav2 requires this; pure SW, no robot needed to write |
+| `/odom` publisher in `balance_bridge` | ROS 2 | ✅ Done | Dead-reckoning odom + TF broadcaster added to `balance_bridge_node.py` |
 | ROS 2 `balance_bridge` colcon build | ROS 2 | ✅ Written | Needs `colcon build` smoke-test on Jetson |
+| `twist_mux` config | ROS 2 | ✅ Done | `config/twist_mux.yaml` written; joy(100)>nav(50)>web(25)>voice(10) |
 
 ---
 

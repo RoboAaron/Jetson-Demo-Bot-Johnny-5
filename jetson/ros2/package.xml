@@ -5,15 +5,22 @@
   <version>0.1.0</version>
   <description>
     ROS 2 bridge between the Teensy balance controller and Nav2 / teleop.
-    Subscribes to /cmd_vel and publishes IMU + velocity state topics.
+    Nodes: balance_bridge_node (/odom, /imu/*, /robot_state),
+           esp32_joy_node (ESP32 PS3 → /joy).
+    Config: teleop_twist_joy + twist_mux (joy > nav > web > voice priority).
   </description>
   <maintainer email="robot@example.com">Johnny-5 Team</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>python3-serial</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_pep8</test_depend>

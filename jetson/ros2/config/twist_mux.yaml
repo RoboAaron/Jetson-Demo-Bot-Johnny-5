@@ -1,0 +1,34 @@
+# twist_mux configuration for Johnny-5 balance robot
+#
+# Priority order (highest number wins):
+#   joy  (PS3 controller)  — highest: manual always overrides autonomous
+#   nav  (Nav2)            — autonomous navigation
+#   web  (browser joystick from PBI-12 web teleoperation)
+#   voice (voice commands from PBI-10 voice_bridge)  — lowest
+#
+# Each source has a timeout: if no message arrives within the timeout the
+# lock is released and the next-priority source takes over.
+# The balance_bridge node subscribes to /cmd_vel (the mux output).
+#
+# Install: ros-humble-twist-mux
+# Usage: included automatically by balance_bridge.launch.py
+
+twist_mux:
+  ros__parameters:
+    topics:
+      joy:
+        topic:    /cmd_vel_joy
+        timeout:  0.5       # release lock if joystick silent for 500 ms
+        priority: 100
+      nav:
+        topic:    /cmd_vel_nav
+        timeout:  0.5
+        priority: 50
+      web:
+        topic:    /cmd_vel_web
+        timeout:  1.0       # web latency can be higher
+        priority: 25
+      voice:
+        topic:    /cmd_vel_voice
+        timeout:  2.0       # voice commands are sparse
+        priority: 10

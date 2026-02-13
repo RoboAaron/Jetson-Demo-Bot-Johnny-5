@@ -16,6 +16,9 @@ setup(
         # launch files
         (os.path.join('share', package_name, 'launch'),
          ['launch/balance_bridge.launch.py']),
+        # config files (twist_mux, teleop_twist_joy)
+        (os.path.join('share', package_name, 'config'),
+         ['config/twist_mux.yaml', 'config/teleop_twist_joy.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'balance_bridge_node = balance_bridge.balance_bridge_node:main',
+            'esp32_joy_node      = balance_bridge.esp32_joy_node:main',
         ],
     },
 )

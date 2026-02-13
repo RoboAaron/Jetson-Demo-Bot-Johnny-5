@@ -1,0 +1,39 @@
+# teleop_twist_joy configuration for PS3 DualShock controller
+#
+# Axis mapping matches esp32_joy_node.py:
+#   axes[0] = lx (left stick horizontal)
+#   axes[1] = ly (left stick vertical)   → linear.x
+#   axes[2] = rx (right stick horizontal) → angular.z (negated: right = negative)
+#   axes[3] = ry (right stick vertical)
+#
+# Button mapping:
+#   buttons[5] = R1 — deadman switch: must hold R1 to send motion commands
+#                    (safety: releasing R1 zeroes cmd_vel)
+#
+# Speed limits:
+#   max_vel:    0.5 m/s  — conservative for initial testing; increase when confident
+#   max_steer:  1.5 rad/s — yaw rate limit
+#
+# Output topic: /cmd_vel_joy  (routed through twist_mux at priority 100)
+# Install: ros-humble-teleop-twist-joy
+
+teleop_twist_joy_node:
+  ros__parameters:
+    axis_linear:
+      x: 1              # ly — left stick vertical
+    scale_linear:
+      x: 0.5            # max 0.5 m/s forward
+    scale_linear_turbo:
+      x: 0.8            # max 0.8 m/s when L1 held (turbo)
+
+    axis_angular:
+      yaw: 2            # rx — right stick horizontal
+    scale_angular:
+      yaw: -1.5         # negative: right-stick-right → negative angular.z (turn right)
+    scale_angular_turbo:
+      yaw: -2.5
+
+    enable_button:  5   # R1 — deadman switch
+    enable_turbo_button: 4   # L1 — turbo mode
+
+    publish_stamped_twist: false
