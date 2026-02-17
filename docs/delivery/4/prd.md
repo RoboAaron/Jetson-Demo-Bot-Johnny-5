@@ -66,6 +66,7 @@ Achieve rock-solid balancing (99%+ reliability) through systematic improvements 
 - PBI 1 (Teensy Core Firmware) - ✅ **COMPLETE** - working balance controller achieved.
 - PBI 2 (SPI Migration) - **ABANDONED** - I2C at 400Hz provides sufficient performance.
 - `PATH_TO_99_PERCENT_RELIABILITY.md` - implementation guide.
+- **Balance code review**: [BALANCE_CODE_REVIEW.md](../../../BALANCE_CODE_REVIEW.md) — Phase 0 immediate fixes (rate-limit writes, filter alpha, PID reset on cutoff). See [BALANCE_REVIEW_ACTIONS.md](./BALANCE_REVIEW_ACTIONS.md) for issue→task mapping. Phase 4 (SPI) is out of scope.
 
 ## Physical Robot Changes
 - **No wiring changes required** - software-only implementation (assumes PBI 2 SPI migration complete).
@@ -90,7 +91,7 @@ Achieve rock-solid balancing (99%+ reliability) through systematic improvements 
 - LQR implementation timeline (after PID or in parallel).
 
 ## Related Tasks
-See [Tasks for PBI 4](./tasks.md) (to be created)
+See [Tasks for PBI 4](./tasks.md).
 
 **Parent Backlog**: [Backlog.md](../backlog.md)
 
