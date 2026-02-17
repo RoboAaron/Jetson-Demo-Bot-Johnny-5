@@ -50,3 +50,25 @@
 
 - **SPI migration** (review Phase 4) — Not possible with current BNO085 board wiring.
 - **Reliability percentages** in review — Treated as indicative only; focus on “stable balance then add velocity” and 2–4 h test budget.
+
+---
+
+## Next steps (evaluation)
+
+**Immediate (finish 4-2, then Phase 0 firmware)**  
+1. **Complete 4-2** — Velocity sign (RIGHT_VELOCITY_SIGN vs VESC), deadband state flag, input clamping. Validate with `log_evaluator.py` on a short stand/floor log; target zero or minimal VEL SIGN MISMATCH when wheels move.  
+2. **Phase 0 in firmware** — Rate-limit VESC writes to ~67 Hz; set `VELOCITY_FILTER_ALPHA` to 0.3; reset PID (SetMode(MANUAL) in cutoff, AUTOMATIC on re-enter). These are small code changes with high impact.  
+3. **One robot session** — Stand test → floor balance (velocity setpoint 0) → small velocity setpoint. Run log_evaluator on each; document in TUNING_RECOMMENDATIONS or a short baseline note.
+
+**Then (4-3, optional 4-2b)**  
+4. **4-3** — Verify/tune angle and velocity gains per TUNING_RECOMMENDATIONS.md; confirm derivative-on-measurement in PID; optionally smooth stiction (MAJOR-2).  
+5. **Optional 4-2b** — Only if you want a separate deliverable for "Phase 0 firmware fixes"; otherwise keep them in 4-2/4-3.
+
+**Later (as time allows)**  
+6. **MAJOR-6** — EEPROM validation in loadSettings() for gains and maxCurrent.  
+7. **4-4** — Sensor fusion only if BNO085 fused output is insufficient.  
+8. **4-5** — Kd_vel once velocity loop is stable.  
+9. **CRITICAL-4** — State machine (FALLEN/WARNING/BALANCING/STARTUP) after balance is stable.  
+10. **4-6 / 4-E2E** — Formal test matrix and E2E CoS sign-off when you're ready to close PBI-4.
+
+**Decision** — No new PBIs or new tasks required. Use 4-2 + 4-3 + BALANCE_REVIEW_ACTIONS order; merge `feature/balance-tuning` to main when 4-2 and Phase 0 are done and you're happy with one good robot session.
