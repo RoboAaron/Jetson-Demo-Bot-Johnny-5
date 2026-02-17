@@ -193,6 +193,34 @@ The GUI automatically saves all raw serial data to timestamped log files:
 ...
 ```
 
+## Log evaluation (log_evaluator.py)
+
+Use the log evaluator to summarize tuning runs and get **clean** metrics for PID decisions. Logs often mix:
+
+- **Wheel power on/off** (e.g. stand tests with motors disabled at times)
+- **Manual disturbances** (holding the mast, pushing the robot)
+
+The evaluator filters those out and reports both **all-row** (raw) and **clean** (disturbance-filtered) stats so gain changes are based on representative data.
+
+### Run
+
+```bash
+python3 tuning_code/log_evaluator.py tuning_code/logs/robot_log_YYYYMMDD_HHMMSS.txt
+```
+
+Options (tune for stand vs floor):
+
+- `--disturbance-roll-rate N` — Roll rate (deg/s) above which a row is treated as disturbance (default: 30).
+- `--motor-off-current N` — Current (A) below which motors are treated as off (default: 0.2).
+- `--motor-off-error N` — |Error| (deg) below which row is motor-off when current is low (default: 1.0).
+
+### Workflow
+
+1. **Characterization pass** — Run with push/hold and wheel toggles; check disturbance counts and VEL SIGN MISMATCH.
+2. **Clean tuning pass** — Wheels powered consistently, minimal manual input; use **clean** metrics for gain decisions.
+3. If clean ratio is < 50%, retake logs before final PID changes.
+4. Follow order: **signs → setpoint/current → angle loop → velocity loop** (see `teensy_balance_cascaded/TUNING_RECOMMENDATIONS.md`).
+
 ## Notes
 
 - GUI updates at 20 Hz (50ms intervals)
