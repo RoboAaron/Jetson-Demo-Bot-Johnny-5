@@ -1,0 +1,10 @@
+# Log files
+logs/
+*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+
