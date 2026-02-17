@@ -1,0 +1,86 @@
+From: Jetson #VEL command patch for feature/spi-migration
+Subject: Add #VEL=<m/s>,STEER=<rad/s> Jetson serial command
+
+Apply to: teensy_balance_cascaded/teensy_balance_cascaded.ino
+Base:     origin/feature/spi-migration (1320 lines)
+Result:   1353 lines (+33 net additions)
+
+To apply:
+    cd /path/to/repo
+    git checkout feature/spi-migration
+    git apply firmware/patches/vel-command-spi-migration.patch
+
+Or cherry-pick the commit from spi-migration-patch branch if available.
+
+---
+diff --git a/teensy_balance_cascaded/teensy_balance_cascaded.ino b/teensy_balance_cascaded/teensy_balance_cascaded.ino
+index b2621a2..3a43064 100644
+--- a/teensy_balance_cascaded/teensy_balance_cascaded.ino
++++ b/teensy_balance_cascaded/teensy_balance_cascaded.ino
+@@ -60,6 +60,13 @@ const float VELOCITY_OUTPUT_MAX = 0.5;    // Maximum velocity PID output (±degr
+ const float VELOCITY_SLEW_RATE = 0.05;    // Maximum change per update (degrees)
+ float lastAngleSetpointFromVel = 0.0;     // For slew rate limiting
+
++// Jetson serial command state (#VEL=<m/s>,STEER=<rad/s>)
++static float  jetsonSteerRads     = 0.0f;
++static unsigned long lastJetsonMs = 0;
++static const float JETSON_MAX_VEL_MPS    = 2.0f;
++static const float JETSON_MAX_STEER_RADS = 3.14159f;
++static const unsigned long JETSON_STALE_MS = 600;  // Clear steer after 600 ms silence
++
+ // ANGLE CONTROL LOOP (Inner Loop - from single-loop)
+ double baseSetpoint = -0.70;  // Base balance angle (degrees) - from LAST_WORKING_CONFIG.md
+ double angleSetpoint = 0.0;   // Active setpoint = baseSetpoint + angleSetpointFromVel
+@@ -416,8 +423,13 @@ void loop() {
+
+   // Handle serial commands (process ALL available commands to prevent buffer overflow)
+   while (Serial.available()) {
+-    char cmd = Serial.read();
+-    handleCommand(cmd);
++    if (Serial.peek() == '#') {
++      String line = Serial.readStringUntil('\n');
++      handleJetsonCommand(line);
++    } else {
++      char cmd = Serial.read();
++      handleCommand(cmd);
++    }
+   }
+
+   // Get IMU data with failure tracking
+@@ -627,7 +639,15 @@ void loop() {
+       angleSetpointFromVel = lastAngleSetpointFromVel + copysign(VELOCITY_SLEW_RATE, desiredChange);
+     }
+     lastAngleSetpointFromVel = angleSetpointFromVel;
+-
++
++    // Jetson steer integration (runs at same 20 Hz as velocity PID)
++    // Watchdog: clear steer command if no Jetson packet received within JETSON_STALE_MS
++    if (millis() - lastJetsonMs > JETSON_STALE_MS) { jetsonSteerRads = 0.0f; }
++    if (jetsonSteerRads != 0.0f) {
++      float dt_s = VELOCITY_PID_SAMPLE_TIME_MS / 1000.0f;
++      yawSetpoint += jetsonSteerRads * (180.0f / M_PI) * dt_s;
++    }
++
+     // Debug prints at 10 Hz (every 5 velocity PID updates = 250ms)
+     static int velocityDebugCounter = 0;
+     velocityDebugCounter++;
+@@ -808,6 +828,19 @@ void loop() {
+   }
+ }
+
++// Parse and apply a Jetson motion command: #VEL=<m/s>,STEER=<rad/s>
++// Called from the serial loop when the next byte is '#'.
++void handleJetsonCommand(String line) {
++  if (!line.startsWith("#VEL=")) return;
++  int steerIdx = line.indexOf(",STEER=");
++  if (steerIdx < 0) return;
++  float newVel   = line.substring(5, steerIdx).toFloat();
++  float newSteer = line.substring(steerIdx + 7).toFloat();
++  velocitySetpoint = constrain(newVel,   -JETSON_MAX_VEL_MPS,    JETSON_MAX_VEL_MPS);
++  jetsonSteerRads  = constrain(newSteer, -JETSON_MAX_STEER_RADS, JETSON_MAX_STEER_RADS);
++  lastJetsonMs     = millis();
++}
++
+ void handleCommand(char cmd) {
+   switch (cmd) {
+     case 'l':
