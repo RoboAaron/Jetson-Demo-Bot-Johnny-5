@@ -18,7 +18,6 @@
 |--------|---------------------|------------------|----------------|
 | **origin/claude/identify-prd-tasks-AIhMn** | 11 | TASKS.md, PBI-5 roadmap, Jetson/ESP32 ROS2 bridge, TeensyComms refactor, #VEL parser, .gitignore, `docs/delivery/5/tasks.md`, `firmware/` layout + patch | **Bring into main** (see below) |
 | **origin/claude/implement-todo-item-iLhMy** | 3 | ROS2 packages (johnny5_bringup, johnny5_description, johnny5_gazebo, johnny5_sensor_fusion), URDF/Gazebo fixes, TODO.md | **Merge into main** (clean, no overlap) |
-| **origin/claude/review-balance-code-Xgv6T** | 116 | Cascaded balance firmware + GUI history (regex, velocity loop, motor direction, etc.) | **Do not merge** — same lineage as feature/spi-migration; main already has the resulting code from the integration. Keep as reference or ignore. |
 | **origin/feature/spi-migration** | 115 | Same balance work as above + SPI-specific docs/sketches we intentionally excluded | **Do not merge** — allowlisted content is already on main. Optional: delete after cleanup. |
 | **origin/integration/main-nonspi-from-feature** | 0 | Already merged into main | **Delete** (local + remote) — done. |
 | **origin/codex/create-documentation-for-setup_windows_dev.bat** | 0 | Already in main (PR #1) | **No action** |
@@ -70,8 +69,8 @@
      - `spi-conversion` (local)
    - **Optional delete (or leave as reference):**
      - `feature/spi-migration`
-     - `origin/claude/review-balance-code-Xgv6T`
      - `pbi1-task1-1`, `pbi1-task1-2` (and remotes)
+   - **Already deleted:** `origin/claude/review-balance-code-Xgv6T` — useful content (BALANCE_CODE_REVIEW.md) is on `feature/balance-tuning`.
      - `origin/claude/identify-prd-tasks-AIhMn` and `origin/claude/implement-todo-item-iLhMy` after their merges are done
 
 5. **Going forward**
