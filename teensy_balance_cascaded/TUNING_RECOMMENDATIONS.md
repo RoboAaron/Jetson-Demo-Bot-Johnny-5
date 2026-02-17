@@ -15,6 +15,8 @@ In `teensy_balance_cascaded.ino` (around lines 182–184):
   - If the right VESC already inverts that motor, the right wheel’s reported RPM may already be in the opposite sense; set **`RIGHT_VELOCITY_SIGN = 1.0`** so left and right velocities have the same sign when the robot moves forward.
   - If you see **"VEL SIGN MISMATCH"** in the log (L and R velocities opposite → average forced to 0), flip **`RIGHT_VELOCITY_SIGN`** (e.g. from -1.0 to 1.0), re-flash, and re-test. The velocity loop only works when both wheel velocities are in the same frame.
 
+**Verified (this rig):** Velocity sign is correct for our VESC configuration. No VEL SIGN MISMATCH when wheels are powered and moving. Left/right velocity signs in firmware match motor direction; use log_evaluator on a short run to confirm zero or minimal mismatch count.
+
 Re-flash after any change. Without matching signs, the velocity loop sees zero and tuning it won’t help.
 
 ---
@@ -93,6 +95,20 @@ Max current:  5.0 A
 5. Add **angle Ki = 0.05**, **Kd = 0.05**.
 6. After confirming balance is good, add **Ki_vel = 0.01** and test slow forward/back.
 7. Save with **`k`** when you’re happy with the behavior.
+
+---
+
+## Deadband thrashing (fixed)
+
+When velocity setpoint is 0 and measured velocity is small, we want the velocity PID to *not* drive the robot (angle-from-velocity = 0). The wrong approach is to call `SetMode(MANUAL)` and then `SetMode(AUTOMATIC)` every 20 ms depending on whether we're in deadband — that **thrashes** the PID (integral resets, mode toggling).
+
+**Fix:** Use a **state flag** so we transition only once when entering and once when exiting deadband.
+
+1. **Enter deadband once:** When `setpoint ≈ 0` and `|filteredVelocity| < VELOCITY_DEADBAND` (0.08 m/s), set `deadbandActive = true`, `velocityPID.SetMode(MANUAL)`, and `angleSetpointFromVel = 0`. Do not call `SetMode(AUTOMATIC)` again until we leave deadband.
+2. **Stay in deadband:** While in deadband, leave output at zero; do not recompute PID.
+3. **Exit deadband once:** When setpoint is non-zero or velocity is outside deadband, set `deadbandActive = false` and `velocityPID.SetMode(AUTOMATIC)` once, then run PID normally.
+
+Implemented in `teensy_balance_cascaded.ino` with `static bool deadbandActive`; see velocity PID block (deadband logic) around the 20 Hz update.
 
 ---
 
