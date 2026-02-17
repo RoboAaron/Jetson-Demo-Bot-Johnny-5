@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Chassis macro: main body of the robot (deck stack + electronics) -->
+  <xacro:macro name="chassis">
+    <joint name="base_link_to_chassis" type="fixed">
+      <parent link="base_link"/>
+      <child link="chassis_link"/>
+      <origin xyz="0 0 ${chassis_z_offset}" rpy="0 0 0"/>
+    </joint>
+
+    <link name="chassis_link">
+      <visual>
+        <geometry>
+          <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+        </geometry>
+        <material name="dark_gray">
+          <color rgba="0.3 0.3 0.3 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${chassis_mass}"/>
+        <inertia
+          ixx="${(1.0/12.0)*chassis_mass*(chassis_width*chassis_width + chassis_height*chassis_height)}"
+          ixy="0" ixz="0"
+          iyy="${(1.0/12.0)*chassis_mass*(chassis_length*chassis_length + chassis_height*chassis_height)}"
+          iyz="0"
+          izz="${(1.0/12.0)*chassis_mass*(chassis_length*chassis_length + chassis_width*chassis_width)}"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- Mast macro: carbon fiber survey pole (LS2015) -->
+  <xacro:macro name="mast">
+    <joint name="chassis_to_mast" type="fixed">
+      <parent link="chassis_link"/>
+      <child link="mast_link"/>
+      <!-- [TENTATIVE] mast base at top of chassis; x/y offset estimated from photos -->
+      <origin xyz="${mast_x_offset} ${mast_y_offset} ${chassis_height/2 + mast_height/2}" rpy="0 0 0"/>
+    </joint>
+
+    <link name="mast_link">
+      <visual>
+        <geometry>
+          <cylinder radius="${mast_radius}" length="${mast_height}"/>
+        </geometry>
+        <material name="carbon">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <cylinder radius="${mast_radius}" length="${mast_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${mast_mass}"/>
+        <inertia
+          ixx="${(1.0/12.0)*mast_mass*(3*mast_radius*mast_radius + mast_height*mast_height)}"
+          ixy="0" ixz="0"
+          iyy="${(1.0/12.0)*mast_mass*(3*mast_radius*mast_radius + mast_height*mast_height)}"
+          iyz="0"
+          izz="${0.5*mast_mass*mast_radius*mast_radius}"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+</robot>

@@ -1,0 +1,153 @@
+# Nav2 parameters for Johnny 5
+# Based on ldrobot_lidar_ros2 example config, tuned for robot footprint.
+#
+# Robot footprint: ~0.203m x 0.355m (chassis + wheels)
+# Robot radius (circumscribed): ~0.22m
+# NOTE: Footprint values are [TENTATIVE] — verify wheel_separation on hardware.
+# LiDAR: LDROBOT STL-19P, 502 ranges, 10Hz, 0.02-25m
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    general_goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      min_vel_x: 0.0
+      max_vel_x: 0.5
+      max_vel_theta: 1.5
+      min_speed_xy: 0.0
+      max_speed_xy: 0.5
+      acc_lim_x: 2.0
+      acc_lim_theta: 2.5
+      decel_lim_x: -2.0
+      decel_lim_theta: -2.5
+      vx_samples: 20
+      vtheta_samples: 20
+      sim_time: 1.5
+      transform_tolerance: 0.2
+      xy_goal_tolerance: 0.25
+      short_circuit_trajectory_evaluation: true
+      stateful: true
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odometry/filtered
+    bt_loop_duration: 10
+    default_server_timeout: 20
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.0, 1.5]
+    min_velocity: [-0.5, 0.0, -1.5]
+    max_accel: [2.0, 0.0, 2.5]
+    max_decel: [-2.0, 0.0, -2.5]
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      use_sim_time: false
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      robot_radius: 0.22            # [TENTATIVE] circumscribed radius of footprint
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          raytrace_max_range: 25.0
+          raytrace_min_range: 0.02
+          obstacle_max_range: 25.0
+          obstacle_min_range: 0.02
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.60
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      use_sim_time: false
+      robot_radius: 0.22            # [TENTATIVE] circumscribed radius of footprint
+      resolution: 0.05
+      track_unknown_space: false
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          raytrace_max_range: 25.0
+          raytrace_min_range: 0.02
+          obstacle_max_range: 25.0
+          obstacle_min_range: 0.02
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.60

@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="johnny5">
+
+  <!-- ============================================================ -->
+  <!-- Johnny 5 - Two-wheeled self-balancing robot                  -->
+  <!-- Jetson AGX Orin + Teensy 4.1 + FSESC6.7 Pro                 -->
+  <!--                                                              -->
+  <!-- Coordinate convention (REP 103):                             -->
+  <!--   x = forward, y = left, z = up                             -->
+  <!--   base_link = center of wheel axle                          -->
+  <!-- ============================================================ -->
+
+  <!-- ============================================================ -->
+  <!-- TENTATIVE DIMENSIONS - Estimated from photos + 8x8" base    -->
+  <!-- plates. All values marked [TENTATIVE] need physical          -->
+  <!-- measurement on hardware to verify.                           -->
+  <!-- ============================================================ -->
+
+  <!-- Simulation mode (set via xacro arg: use_sim:=true) -->
+  <xacro:arg name="use_sim" default="false"/>
+  <xacro:property name="use_sim" value="$(arg use_sim)"/>
+
+  <!-- Wheels: 6.5" Gyroor hoverboard hub motors (BOM-confirmed) -->
+  <xacro:property name="wheel_radius"     value="0.08255"/>  <!-- 6.5" / 2 — confirmed from BOM -->
+  <xacro:property name="wheel_width"      value="0.055"/>    <!-- [TENTATIVE] ~2.2", needs measurement -->
+  <xacro:property name="wheel_mass"       value="1.8"/>      <!-- [TENTATIVE] hoverboard hub motor w/ magnets+windings -->
+  <xacro:property name="wheel_separation" value="0.30"/>     <!-- [TENTATIVE] ~12" — 8" plate + 2x motor mount offset -->
+
+  <!-- Chassis: 3x 8x8" aluminum plates with standoffs -->
+  <xacro:property name="chassis_length"   value="0.203"/>    <!-- 8" = 203mm — confirmed by user -->
+  <xacro:property name="chassis_width"    value="0.203"/>    <!-- 8" = 203mm — confirmed by user -->
+  <xacro:property name="chassis_height"   value="0.28"/>     <!-- [TENTATIVE] ~11" — 3 plates + standoffs, user says 10-12" -->
+  <xacro:property name="chassis_mass"     value="8.0"/>      <!-- [TENTATIVE] batteries+ESC+Jetson+3 plates+standoffs -->
+  <xacro:property name="chassis_z_offset" value="0.14"/>     <!-- [TENTATIVE] chassis_height/2, assumes bottom plate at axle -->
+
+  <!-- Mast: LS2015 carbon fiber survey pole, 4-section, 1.8m total -->
+  <xacro:property name="mast_radius"      value="0.016"/>    <!-- 32mm diameter — from BOM (LS2015) -->
+  <xacro:property name="mast_height"      value="1.35"/>     <!-- 3 x 0.45m sections (standard config) -->
+  <xacro:property name="mast_mass"        value="0.5"/>      <!-- [TENTATIVE] carbon fiber pole + connectors -->
+  <xacro:property name="mast_x_offset"    value="-0.05"/>    <!-- [TENTATIVE] slightly behind center -->
+  <xacro:property name="mast_y_offset"    value="0.07"/>     <!-- [TENTATIVE] offset to one side per photos -->
+
+  <!-- LiDAR: LDROBOT STL-19P — not yet mounted, position TBD -->
+  <xacro:property name="lidar_x"          value="0.10"/>     <!-- [TENTATIVE] forward of base_link -->
+  <xacro:property name="lidar_z"          value="0.10"/>     <!-- [TENTATIVE] design spec: 6-8" above ground -->
+
+  <!-- IMU: BNO085 on Teensy breakout, upper deck area -->
+  <xacro:property name="imu_x"            value="0.0"/>      <!-- [TENTATIVE] assumed centered -->
+  <xacro:property name="imu_z"            value="0.22"/>     <!-- [TENTATIVE] near top plate of 3-plate stack -->
+
+  <!-- Camera: OAK-D Pro at mast top -->
+  <!-- camera_z = chassis_z_offset + chassis_height/2 + mast_height -->
+  <!--         = 0.14 + 0.14 + 1.35 = 1.63m above base_link        -->
+  <xacro:property name="camera_z"         value="1.63"/>     <!-- [TENTATIVE] depends on mast config + chassis height -->
+
+  <!-- Include sub-files -->
+  <xacro:include filename="$(find johnny5_description)/urdf/chassis.urdf.xacro"/>
+  <xacro:include filename="$(find johnny5_description)/urdf/wheels.urdf.xacro"/>
+  <xacro:include filename="$(find johnny5_description)/urdf/sensors.urdf.xacro"/>
+  <xacro:include filename="$(find johnny5_description)/urdf/gazebo.urdf.xacro"/>
+
+  <!-- ==================== Links & Joints ==================== -->
+
+  <!-- base_footprint: ground-plane projection -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- base_link: wheel axle center -->
+  <link name="base_link"/>
+
+  <!-- Chassis -->
+  <xacro:chassis/>
+
+  <!-- Wheels -->
+  <xacro:wheel prefix="left"  y_offset="${wheel_separation/2}"/>
+  <xacro:wheel prefix="right" y_offset="${-wheel_separation/2}"/>
+
+  <!-- Mast -->
+  <xacro:mast/>
+
+  <!-- Sensors -->
+  <xacro:imu_sensor/>
+  <xacro:lidar_sensor/>
+  <xacro:camera_sensor/>
+
+</robot>

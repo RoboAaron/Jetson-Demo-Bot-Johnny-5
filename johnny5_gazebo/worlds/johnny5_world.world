@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="johnny5_world">
+
+    <!-- Physics engine tuned for balance robot dynamics -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>150</iters>
+          <sor>1.4</sor>
+        </solver>
+        <constraints>
+          <cfm>0.00001</cfm>
+          <erp>0.2</erp>
+        </constraints>
+      </ode>
+    </physics>
+
+    <!-- Lighting -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ==================== Indoor test environment ==================== -->
+    <!-- A simple room with walls for SLAM and navigation testing.        -->
+    <!-- ~8m x 6m room with a couple of interior obstacles.               -->
+
+    <!-- Floor (visual only, ground_plane handles collision) -->
+    <model name="floor">
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>8 6</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0.001 0 0 0</pose>
+    </model>
+
+    <!-- North wall -->
+    <model name="wall_north">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>8 0.15 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>8 0.15 1.0</size></box></geometry>
+          <material>
+            <ambient>0.9 0.9 0.85 1</ambient>
+            <diffuse>0.9 0.9 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>0 3.0 0.5 0 0 0</pose>
+    </model>
+
+    <!-- South wall -->
+    <model name="wall_south">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>8 0.15 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>8 0.15 1.0</size></box></geometry>
+          <material>
+            <ambient>0.9 0.9 0.85 1</ambient>
+            <diffuse>0.9 0.9 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>0 -3.0 0.5 0 0 0</pose>
+    </model>
+
+    <!-- East wall -->
+    <model name="wall_east">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.15 6 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.15 6 1.0</size></box></geometry>
+          <material>
+            <ambient>0.9 0.9 0.85 1</ambient>
+            <diffuse>0.9 0.9 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>4.0 0 0.5 0 0 0</pose>
+    </model>
+
+    <!-- West wall -->
+    <model name="wall_west">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.15 6 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.15 6 1.0</size></box></geometry>
+          <material>
+            <ambient>0.9 0.9 0.85 1</ambient>
+            <diffuse>0.9 0.9 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>-4.0 0 0.5 0 0 0</pose>
+    </model>
+
+    <!-- Obstacle: table -->
+    <model name="table">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.2 0.6 0.75</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.2 0.6 0.75</size></box></geometry>
+          <material>
+            <ambient>0.55 0.35 0.2 1</ambient>
+            <diffuse>0.55 0.35 0.2 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>2.0 1.0 0.375 0 0 0</pose>
+    </model>
+
+    <!-- Obstacle: column -->
+    <model name="column">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.15</radius><length>1.0</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.15</radius><length>1.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>-1.5 -1.0 0.5 0 0 0</pose>
+    </model>
+
+    <!-- Obstacle: box (movable-sized but static for testing) -->
+    <model name="box_obstacle">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.4 0.4 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.4 0.4 0.5</size></box></geometry>
+          <material>
+            <ambient>0.2 0.4 0.7 1</ambient>
+            <diffuse>0.2 0.4 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>1.0 -1.5 0.25 0 0 0</pose>
+    </model>
+
+    <!-- Interior wall / partition -->
+    <model name="partition">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2.0 0.1 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>2.0 0.1 1.0</size></box></geometry>
+          <material>
+            <ambient>0.85 0.85 0.8 1</ambient>
+            <diffuse>0.85 0.85 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>-1.0 1.5 0.5 0 0 0</pose>
+    </model>
+
+  </world>
+</sdf>

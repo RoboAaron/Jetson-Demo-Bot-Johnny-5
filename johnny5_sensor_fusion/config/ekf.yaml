@@ -1,0 +1,92 @@
+# Extended Kalman Filter configuration for Johnny 5
+# Uses robot_localization package to fuse IMU + wheel odometry
+#
+# Produces a filtered odom -> base_link transform and /odometry/filtered topic.
+# On real hardware, wheel odom comes from the Teensy/FSESC encoder feedback
+# (via micro-ROS over CAN); in simulation, from the Gazebo diff_drive plugin.
+#
+# IMU NOTE: The BNO085 supports "rotation vector" mode which provides
+# pre-fused orientation from its onboard Hillcrest Labs SH-2 AHRS.
+# This config takes orientation (roll/pitch/yaw) AND angular velocity
+# from the IMU. The EKF uses orientation for drift correction and
+# angular velocity for fast state prediction — this is safe even with
+# pre-fused orientation (no double-fusion issue).
+# Process noise and covariance values are [TENTATIVE] — tune on hardware.
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 50.0
+    sensor_timeout: 0.1
+    two_d_mode: false          # 3D mode for a balancing robot (pitch matters)
+    publish_tf: true
+    publish_acceleration: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom          # Use 'odom' when no absolute position source
+
+    # --- Wheel odometry (from Teensy/FSESC or Gazebo diff_drive) ---
+    odom0: /odom
+    odom0_config: [true,  true,  false,   # x, y, z position
+                   false, false, true,    # roll, pitch, yaw
+                   true,  true,  false,   # vx, vy, vz
+                   false, false, true,    # vroll, vpitch, vyaw
+                   false, false, false]   # ax, ay, az
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # --- IMU data (BNO085 rotation vector mode via Teensy, or Gazebo IMU plugin) ---
+    # BNO085 provides pre-fused orientation quaternion (rotation vector output).
+    # We take orientation for absolute reference and angular velocity for dynamics.
+    # Linear acceleration is included to help detect rapid velocity changes during
+    # balance recovery. Gravity must be removed since BNO085 accel includes it.
+    imu0: /imu/data
+    imu0_config: [false, false, false,   # x, y, z position (IMU has none)
+                  true,  true,  true,    # roll, pitch, yaw — from BNO085 rotation vector
+                  false, false, false,   # vx, vy, vz
+                  true,  true,  true,    # vroll, vpitch, vyaw — raw gyro
+                  true,  true,  true]    # ax, ay, az — raw accelerometer
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    # Process noise covariance (tune after hardware testing)
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    process_noise_covariance: [
+      0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.04,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.02,  0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.015
+    ]
+
+    initial_estimate_covariance: [
+      1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,   0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9,  0.0,
+      0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-9
+    ]

@@ -1,0 +1,7 @@
+# Joint state publisher configuration
+# Wheel joints are continuous; driven by diff_drive (sim) or FSESC (hardware)
+joint_state_publisher:
+  ros__parameters:
+    rate: 50
+    source_list:
+      - /joint_states
