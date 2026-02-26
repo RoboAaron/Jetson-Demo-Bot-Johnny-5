@@ -117,8 +117,17 @@ def main():
     args = p.parse_args()
     path = args.log_path
     if not path.exists():
-        print(f"File not found: {path}")
-        sys.exit(1)
+        # Try logs/ next to this script (so filename-only works from repo root or tuning_code/)
+        script_dir = Path(__file__).resolve().parent
+        fallback = script_dir / "logs" / path.name
+        if path.name.startswith("robot_log") and fallback.exists():
+            path = fallback
+        else:
+            print(f"File not found: {path}")
+            if not path.is_absolute():
+                print("  From repo root: python3 tuning_code/log_evaluator.py tuning_code/logs/<filename>")
+                print("  From tuning_code/: python3 log_evaluator.py logs/<filename>")
+            sys.exit(1)
 
     data_rows = []
     vel_mismatches = 0
@@ -231,6 +240,8 @@ def main():
         last = vesc_stats[-1]
         rate_str = f"{last[3]:.1f} Hz" if last[3] is not None else "inactive"
         print(f"VESC (last):   Success={last[0]}  Rate={last[1]:.1f}%  Fail={last[2]}  {rate_str}")
+    if i2c_stats or vesc_stats:
+        print("  (I2C/VESC stats are cumulative from firmware start; may include time when VESCs were off or log was toggled.)")
 
     if syncs:
         s = syncs[-1]

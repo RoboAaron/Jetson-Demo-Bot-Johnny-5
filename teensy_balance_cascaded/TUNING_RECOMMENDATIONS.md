@@ -65,7 +65,20 @@ Only meaningful when velocity signs match your VESC setup (no VEL SIGN MISMATCH)
 
 - **4.5–6 A** is a good range (you were at 4.5 in the log).
 - **5–5.5 A** is a safe default: enough for corrections, not overly aggressive.
+- If the log shows motors **saturating at max current** (Left/Right often at ±maxCurrent) while roll swings widely, **lower max current** (e.g. to 5 A) so the PID works in a more linear range and stops "banging" the limits.
 - Use `m`/`M` (or GUI ▼/▲) and save with `k`.
+
+---
+
+## 5b. If you see large oscillation
+
+When roll swings widely (e.g. ±5° to ±20°) and motors hit ±maxCurrent repeatedly:
+
+1. **Add damping first:** Increase **Kd** (e.g. 0.03 → **0.06 or 0.08**). Low Kd is the main cause of overshoot and sustained oscillation.
+2. **Reduce max current** temporarily to **5.0 A** so the loop doesn’t saturate as hard; re-evaluate with log_evaluator.
+3. **Base setpoint:** If you previously had stable balance near **-1.5° to -1.6°**, try that instead of a more upright setpoint (e.g. -0.7°). A setpoint far from the natural lean can force constant large corrections.
+4. **One setpoint per run:** Avoid changing setpoint mid-run when tuning; pick one (e.g. -1.5°) and run a short log, then evaluate.
+5. After oscillation is reduced, consider **smoothing stiction** (the ±0.55 A step at small error can cause small limit cycling); see BALANCE_CODE_REVIEW MAJOR-2.
 
 ---
 

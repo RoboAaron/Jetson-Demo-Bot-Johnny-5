@@ -204,8 +204,18 @@ The evaluator filters those out and reports both **all-row** (raw) and **clean**
 
 ### Run
 
+**From repo root:**
 ```bash
 python3 tuning_code/log_evaluator.py tuning_code/logs/robot_log_YYYYMMDD_HHMMSS.txt
+```
+Or by filename only (script looks in `tuning_code/logs/`):
+```bash
+python3 tuning_code/log_evaluator.py robot_log_20260218_225644.txt
+```
+
+**From `tuning_code/` directory:**
+```bash
+python3 log_evaluator.py logs/robot_log_YYYYMMDD_HHMMSS.txt
 ```
 
 Options (tune for stand vs floor):

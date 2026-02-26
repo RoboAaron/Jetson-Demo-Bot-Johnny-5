@@ -443,7 +443,7 @@ class TeensyComms:
             'p': 'Decrease Angle Kp',   'P': 'Increase Angle Kp',
             'i': 'Decrease Angle Ki',   'I': 'Increase Angle Ki',
             'j': 'Decrease Angle Kd',   'D': 'Increase Angle Kd',
-            'v': 'Decrease Vel Setpt',  'V': 'Increase Vel Setpt',
+            'v': 'Toggle Velocity Loop', '6': 'Decrease Vel Setpt', 'V': 'Increase Vel Setpt',
             '0': 'Stop (vel=0)',
             'w': 'Decrease Vel Kp',     'W': 'Increase Vel Kp',
             'e': 'Decrease Vel Ki',     'E': 'Increase Vel Ki',

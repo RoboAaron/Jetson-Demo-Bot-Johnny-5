@@ -15,9 +15,17 @@
  * 
  * When velocitySetpoint = 0.0: Robot balances in place (like single-loop)
  * When velocitySetpoint > 0.0: Robot tilts forward and moves forward
+ *
+ * === CHANGED ===
+ * FORCE_SINGLE_LOOP_MODE: set to 1 to disable velocity loop at compile time (pure angle PID = single-loop).
+ * useVelocityLoop: runtime flag (default false); 'v' toggles. When false, angleSetpoint = baseSetpoint exactly.
  */
 
+// Set to 1 to behave exactly like single-loop (velocity loop never active)
+#define FORCE_SINGLE_LOOP_MODE 0
+
 #include <Wire.h>
+#include <string.h>
 #include <Adafruit_BNO08x.h>
 #include <VescUart.h>
 #include <PID_v1.h>
@@ -53,23 +61,32 @@ double Kd_vel = 0.0;    // Derivative gain (ALWAYS 0 - PI only)
 PID velocityPID(&velocityInput, &angleSetpointFromVel, &velocitySetpoint, Kp_vel, Ki_vel, Kd_vel, REVERSE);
 
 // Velocity filtering and control
-float filteredVelocity = 0.0;           // EMA filtered velocity
-const float VELOCITY_FILTER_ALPHA = 0.1;  // EMA filter coefficient (0.0-1.0, lower = more filtering)
-const float VELOCITY_DEADBAND = 0.08;     // Deadband when setpoint = 0 (m/s)
+// === CHANGED === Stronger filtering and wider deadband so standstill stays in deadband (VESC ERPM noise).
+float filteredVelocity = 0.0;           // EMA + moving-average filtered velocity (m/s)
+const float VELOCITY_FILTER_ALPHA = 0.04;  // EMA coefficient (lower = more filtering; 0.04 = heavy smoothing)
+const float VELOCITY_DEADBAND = 0.25;      // Deadband when setpoint = 0 (m/s) — wider so noise doesn't exit
 const float VELOCITY_OUTPUT_MAX = 0.5;    // Maximum velocity PID output (±degrees)
 const float VELOCITY_SLEW_RATE = 0.05;    // Maximum change per update (degrees)
 float lastAngleSetpointFromVel = 0.0;     // For slew rate limiting
+// Moving-average buffer (samples of EMA output) for extra smoothing at standstill
+const int VELOCITY_MA_SIZE = 6;
+float velocityEmaBuffer[VELOCITY_MA_SIZE];
+int velocityEmaIndex = 0;
+bool velocityMaFilled = false;
+
+// === CHANGED === Runtime flag: when false, velocity loop is off and angle setpoint = baseSetpoint exactly.
+bool useVelocityLoop = false;  // Default false for testing; 'v' toggles. Match single-loop first.
 
 // ANGLE CONTROL LOOP (Inner Loop - from single-loop)
 double baseSetpoint = -0.70;  // Base balance angle (degrees) - from LAST_WORKING_CONFIG.md
-double angleSetpoint = 0.0;   // Active setpoint = baseSetpoint + angleSetpointFromVel
+double angleSetpoint = 0.0;   // Active setpoint = baseSetpoint + angleSetpointFromVel (or baseSetpoint when vel loop off)
 double angleInput;             // Current roll angle (degrees)
 double motorCurrent;           // PID output: motor current (Amps)
 
-// Angle PID Gains - Use working values from LAST_WORKING_CONFIG.md (restored to last stable single-loop value)
-double Kp = 1.50;   // Proportional gain (restored from LAST_WORKING_CONFIG.md for meaningful current output)
-double Ki = 0.00;   // Integral gain
-double Kd = 0.03;   // Derivative gain
+// === CHANGED === Angle PID defaults: match single-loop territory (Kp 4.5–6, Kd 0.25–0.4) for stability.
+double Kp = 5.0;    // Proportional gain (single-loop used 5.0; tune 4.5–6.0)
+double Ki = 0.0;    // Integral gain (start 0, add small later if needed)
+double Kd = 0.3;    // Derivative gain (single-loop used 0.3; 0.25–0.40)
 
 PID balancePID(&angleInput, &motorCurrent, &angleSetpoint, Kp, Ki, Kd, DIRECT);
 
@@ -318,7 +335,13 @@ void setup() {
   } else {
     Serial.println("💾 No saved settings found (using defaults)");
   }
-  
+  if (FORCE_SINGLE_LOOP_MODE) {
+    useVelocityLoop = false;
+  }
+  memset(velocityEmaBuffer, 0, sizeof(velocityEmaBuffer));
+  velocityEmaIndex = 0;
+  velocityMaFilled = false;
+
   // Validate yaw PID gains and reset if corrupted
   if (isnan(Kp_yaw) || isinf(Kp_yaw) || Kp_yaw < 0 || Kp_yaw > 10.0) {
     Kp_yaw = 0.0;
@@ -342,10 +365,16 @@ void setup() {
   balancePID.SetOutputLimits(-maxCurrent, maxCurrent);
   balancePID.SetSampleTime(PID_SAMPLE_TIME_MS);  // 500Hz update rate
   
-  // Initialize velocity PID controller (outer loop - slower)
-  velocityPID.SetMode(AUTOMATIC);
-  velocityPID.SetOutputLimits(-VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);  // Limit angle offset to ±0.5 degrees
-  velocityPID.SetSampleTime(VELOCITY_PID_SAMPLE_TIME_MS);  // 20Hz update rate (50ms)
+  // === CHANGED === Velocity PID: start in MANUAL when velocity loop disabled (useVelocityLoop false).
+  if (useVelocityLoop && !FORCE_SINGLE_LOOP_MODE) {
+    velocityPID.SetMode(AUTOMATIC);
+  } else {
+    velocityPID.SetMode(MANUAL);
+    angleSetpointFromVel = 0.0;
+    lastAngleSetpointFromVel = 0.0;
+  }
+  velocityPID.SetOutputLimits(-VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
+  velocityPID.SetSampleTime(VELOCITY_PID_SAMPLE_TIME_MS);
   
   // Initialize yaw PID controller
   yawPID.SetMode(AUTOMATIC);
@@ -373,8 +402,11 @@ void setup() {
   Serial.println("d - Toggle Diagnostic Mode (direct angle→current, no PID)");
   Serial.println();
   Serial.println("=== VELOCITY CONTROL ===");
-  Serial.println("v/V - Decrease/Increase velocity setpoint");
+  Serial.println("v - Toggle velocity loop ON/OFF (default OFF = single-loop behavior)");
+  Serial.println("6/V - Decrease/Increase velocity setpoint (when velocity loop ON)");
   Serial.println("0 - Set velocity setpoint to 0.0 (stop and balance)");
+  Serial.printf("  useVelocityLoop=%d (0=single-loop mode)\n", useVelocityLoop ? 1 : 0);
+  if (FORCE_SINGLE_LOOP_MODE) Serial.println("  FORCE_SINGLE_LOOP_MODE=1 at compile time");
   Serial.println();
   Serial.println("=== VELOCITY PID TUNING ===");
   Serial.println("w/W - Decrease/Increase velocity Kp");
@@ -579,78 +611,83 @@ void loop() {
                    lastRightERPM, lastRightMechRPM, rightVelocity, avgVelocity);
     }
     
-    // Apply EMA filter to velocity
-    filteredVelocity = VELOCITY_FILTER_ALPHA * avgVelocity + (1.0 - VELOCITY_FILTER_ALPHA) * filteredVelocity;
+    // === CHANGED === EMA then moving-average for reliable deadband at standstill (VESC noise).
+    float emaOut = VELOCITY_FILTER_ALPHA * avgVelocity + (1.0f - VELOCITY_FILTER_ALPHA) * filteredVelocity;
+    velocityEmaBuffer[velocityEmaIndex] = emaOut;
+    velocityEmaIndex = (velocityEmaIndex + 1) % VELOCITY_MA_SIZE;
+    if (velocityEmaIndex == 0) velocityMaFilled = true;
+    float sum = 0.0f;
+    int n = velocityMaFilled ? VELOCITY_MA_SIZE : (velocityEmaIndex == 0 ? 1 : velocityEmaIndex);
+    for (int i = 0; i < n; i++) sum += velocityEmaBuffer[i];
+    filteredVelocity = sum / (float)n;
   }
   
-  // Velocity PID control (runs at 20Hz = 50ms intervals, independent of VESC read rate)
+  // === CHANGED === Compute every loop so angleSetpoint is correct every cycle (not only every 50ms).
+  bool velocityLoopActive = useVelocityLoop && !FORCE_SINGLE_LOOP_MODE;
+  bool inDeadband = (fabs(velocitySetpoint) < 0.01f) && (fabs(filteredVelocity) < VELOCITY_DEADBAND);
+  bool velocityOutputActive = velocityLoopActive && !inDeadband;
+
+  // Guarantee angle setpoint: when velocity loop off or in deadband, exactly baseSetpoint (no creep).
+  if (!velocityOutputActive) {
+    angleSetpointFromVel = 0.0;
+    angleSetpoint = baseSetpoint;
+  } else {
+    angleSetpoint = baseSetpoint + angleSetpointFromVel;
+  }
+
   static unsigned long lastVelocityPIDUpdate = 0;
   static bool deadbandActive = false;  // State flag to prevent mode thrashing
   if (millis() - lastVelocityPIDUpdate >= VELOCITY_PID_SAMPLE_TIME_MS) {
     lastVelocityPIDUpdate = millis();
-    
-    // Deadband logic: When setpoint = 0, ignore small velocity errors
-    // IMPORTANT: Only apply deadband when setpoint is exactly 0, NOT when setpoint is non-zero
-    bool inDeadband = (fabs(velocitySetpoint) < 0.01) && (fabs(filteredVelocity) < VELOCITY_DEADBAND);
-    
-    if (inDeadband) {
-      // Deadband active: setpoint = 0 AND velocity is small
-      if (!deadbandActive) {
-        // Enter deadband once: set MANUAL mode and zero output
+
+    if (!velocityOutputActive) {
+      // Velocity loop off or in deadband: force angleFromVel and internal state to exactly 0 (no creep).
+      angleSetpointFromVel = 0.0;
+      lastAngleSetpointFromVel = 0.0;
+      if (velocityLoopActive && inDeadband) {
+        if (!deadbandActive) {
+          deadbandActive = true;
+          velocityPID.SetMode(MANUAL);
+        }
+      } else if (!velocityLoopActive) {
         deadbandActive = true;
         velocityPID.SetMode(MANUAL);
-        angleSetpointFromVel = 0.0;
-        lastAngleSetpointFromVel = 0.0;
       }
-      // Stay in deadband - output remains zero, no computation needed
     } else {
-      // Normal operation: setpoint is non-zero OR velocity is significant
+      // useVelocityLoop true and not in deadband: run velocity PID
       if (deadbandActive) {
-        // Exit deadband once: re-initialize and set AUTOMATIC mode
         deadbandActive = false;
         velocityPID.SetMode(AUTOMATIC);
       }
-      
-      // Clamp velocity input to prevent garbage values from saturating loop
       velocityInput = constrain(filteredVelocity, -2.0, 2.0);
-      
-      // Compute velocity PID (PI only, Kd always 0)
-      velocityPID.Compute();  // Output: angleSetpointFromVel (degrees)
+      velocityPID.Compute();
+      angleSetpointFromVel = constrain(angleSetpointFromVel, -VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
+      float desiredChange = angleSetpointFromVel - lastAngleSetpointFromVel;
+      if (fabs(desiredChange) > VELOCITY_SLEW_RATE) {
+        angleSetpointFromVel = lastAngleSetpointFromVel + copysign(VELOCITY_SLEW_RATE, desiredChange);
+      }
+      lastAngleSetpointFromVel = angleSetpointFromVel;
     }
-    
-    // Clamp output to ±VELOCITY_OUTPUT_MAX
-    angleSetpointFromVel = constrain(angleSetpointFromVel, -VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
-    
-    // Apply slew rate limiting
-    float desiredChange = angleSetpointFromVel - lastAngleSetpointFromVel;
-    if (abs(desiredChange) > VELOCITY_SLEW_RATE) {
-      angleSetpointFromVel = lastAngleSetpointFromVel + copysign(VELOCITY_SLEW_RATE, desiredChange);
-    }
-    lastAngleSetpointFromVel = angleSetpointFromVel;
-    
-    // Debug prints at 10 Hz (every 5 velocity PID updates = 250ms)
+
+    // Debug at 10 Hz (unchanged)
     static int velocityDebugCounter = 0;
     velocityDebugCounter++;
     if (velocityDebugCounter >= 5) {
       velocityDebugCounter = 0;
-      // Fixed sign: error = setpoint - input (correct control error)
       float velocityError = velocitySetpoint - filteredVelocity;
       Serial.printf("🔍 VEL: raw=%.3f filt=%.3f err=%.3f angleFromVel=%.4f° setpt=%.3f totalSetpt=%.2f° [Kp=%.3f Ki=%.0f]\n",
-                   avgVelocity, filteredVelocity, velocityError, angleSetpointFromVel, 
+                   avgVelocity, filteredVelocity, velocityError, angleSetpointFromVel,
                    velocitySetpoint, baseSetpoint + angleSetpointFromVel, Kp_vel, Ki_vel);
     }
-    
-    // Sign verification print at 1 Hz (every 20 velocity PID updates = 1 second)
     static int signVerificationCounter = 0;
     signVerificationCounter++;
     if (signVerificationCounter >= 20) {
       signVerificationCounter = 0;
-      // Sign verification: If setpoint is + and velocity is -, angleFromVel should go NEGATIVE (tilt more forward) after REVERSE fix
       Serial.printf("✅ SIGN CHECK: setpt=%.3f m/s, filtVel=%.3f m/s, angleFromVel=%.4f° | Expected: +setpt with -vel → -angleFromVel (forward tilt)\n",
                    velocitySetpoint, filteredVelocity, angleSetpointFromVel);
     }
   }
-  
+
   // CASCADED BALANCE CONTROL
   float leftMotorCurrent = 0.0;
   float rightMotorCurrent = 0.0;
@@ -677,10 +714,7 @@ void loop() {
       }
     } else {
       // NORMAL CONTROL: Cascaded PID
-      
-      // Update active angle setpoint: base + velocity PID output
-      angleSetpoint = baseSetpoint + angleSetpointFromVel;
-      
+      // === CHANGED === angleSetpoint already set above (baseSetpoint or base+angleFromVel); do not overwrite here.
       // Set angle PID input to current roll angle
       angleInput = roll;
       
@@ -751,13 +785,18 @@ void loop() {
       vescLeft.setCurrent(leftMotorCurrent);
       vescRight.setCurrent(rightMotorCurrent);
       
-      // Debug output (every 500ms) - reduced frequency to avoid spam
+      // === CHANGED === Rich debug every 100 ms when logging enabled (angleInput, setpoint, vel, deadband, useVelocityLoop, current).
       static unsigned long lastDebug = 0;
-      if (millis() - lastDebug > 500) {
-        Serial.printf("🔧 DEBUG: Roll=%.2f°, Vel=%.3f/%.3f, VelPID=%.3f°, Out=%.4fA, Left=%.4fA, Right=%.4fA\n", 
-                     roll, filteredVelocity, velocitySetpoint, angleSetpointFromVel, outputCurrent, 
-                     leftMotorCurrent, rightMotorCurrent);
+      if (loggingEnabled && (millis() - lastDebug >= 100)) {
         lastDebug = millis();
+        Serial.printf("DBG100: angleIn=%.3f setpt=%.3f fromVel=%.3f filtVel=%.3f inDB=%d useVel=%d motor=%.3f\n",
+                     angleInput, angleSetpoint, angleSetpointFromVel, filteredVelocity,
+                     inDeadband ? 1 : 0, useVelocityLoop ? 1 : 0, outputCurrent);
+      } else if (!loggingEnabled && (millis() - lastDebug > 500)) {
+        lastDebug = millis();
+        Serial.printf("🔧 DEBUG: Roll=%.2f°, Vel=%.3f/%.3f, VelPID=%.3f°, Out=%.4fA, Left=%.4fA, Right=%.4fA\n",
+                     roll, filteredVelocity, velocitySetpoint, angleSetpointFromVel, outputCurrent,
+                     leftMotorCurrent, rightMotorCurrent);
       }
       
       // Log data if enabled
@@ -869,21 +908,36 @@ void handleCommand(char cmd) {
       }
       break;
     
-    // VELOCITY CONTROL
+    // === CHANGED === v = toggle velocity loop (single-loop mode when off). 6/V = decrease/increase setpoint.
     case 'v':
-      // Decrease velocity setpoint
+      if (FORCE_SINGLE_LOOP_MODE) {
+        Serial.println("Velocity loop disabled by FORCE_SINGLE_LOOP_MODE (compile-time)");
+      } else {
+        useVelocityLoop = !useVelocityLoop;
+        if (useVelocityLoop) {
+          velocityPID.SetMode(AUTOMATIC);
+          Serial.println("Velocity loop ENABLED");
+        } else {
+          velocityPID.SetMode(MANUAL);
+          angleSetpointFromVel = 0.0;
+          lastAngleSetpointFromVel = 0.0;
+          Serial.println("Velocity loop DISABLED (single-loop mode)");
+        }
+      }
+      break;
+
+    case '6':
       velocitySetpoint -= (fineAdjust ? VELOCITY_STEP_FINE : VELOCITY_STEP_COARSE);
       if (velocitySetpoint < -VELOCITY_MAX) velocitySetpoint = -VELOCITY_MAX;
       Serial.printf("Velocity Setpoint = %.3f m/s (decreased)\n", velocitySetpoint);
       break;
-      
+
     case 'V':
-      // Increase velocity setpoint
       velocitySetpoint += (fineAdjust ? VELOCITY_STEP_FINE : VELOCITY_STEP_COARSE);
       if (velocitySetpoint > VELOCITY_MAX) velocitySetpoint = VELOCITY_MAX;
       Serial.printf("Velocity Setpoint = %.3f m/s (increased)\n", velocitySetpoint);
       break;
-      
+
     case '0':
       velocitySetpoint = 0.0;
       Serial.println("Velocity Setpoint = 0.000 m/s (stop and balance)");
@@ -1104,13 +1158,13 @@ void handleCommand(char cmd) {
 void sendSyncData() {
   Serial.printf("SYNC:Kp=%.3f,Ki=%.3f,Kd=%.3f,Kp_vel=%.3f,Ki_vel=%.3f,Kd_vel=%.3f,"
                 "Kp_yaw=%.3f,Ki_yaw=%.3f,Kd_yaw=%.3f,setpoint=%.3f,maxCurrent=%.2f,"
-                "velSetpoint=%.3f,yawEnabled=%d,fineAdjust=%d,"
+                "velSetpoint=%.3f,yawEnabled=%d,fineAdjust=%d,useVelLoop=%d,"
                 "leftMotorSign=%.1f,rightMotorSign=%.1f,leftVelSign=%.1f,rightVelSign=%.1f\n",
-                Kp, Ki, Kd, 
+                Kp, Ki, Kd,
                 Kp_vel, Ki_vel, Kd_vel,
                 Kp_yaw, Ki_yaw, Kd_yaw,
                 baseSetpoint, maxCurrent,
-                velocitySetpoint, yawControlEnabled ? 1 : 0, fineAdjust ? 1 : 0,
+                velocitySetpoint, yawControlEnabled ? 1 : 0, fineAdjust ? 1 : 0, useVelocityLoop ? 1 : 0,
                 LEFT_MOTOR_DIRECTION_SIGN, RIGHT_MOTOR_DIRECTION_SIGN,
                 LEFT_VELOCITY_SIGN, RIGHT_VELOCITY_SIGN);
 }
@@ -1120,10 +1174,11 @@ void printTuningValues() {
   Serial.println("║         CURRENT TUNING VALUES                      ║");
   Serial.println("╚════════════════════════════════════════════════════╝");
   Serial.println("VELOCITY PID CONTROL (Outer Loop - PI only):");
+  Serial.printf("  useVelocityLoop: %s  (v to toggle, OFF = single-loop mode)\n", useVelocityLoop ? "ON" : "OFF");
   Serial.printf("  Velocity Kp: %.3f  Velocity Ki: %.3f  Velocity Kd: %.3f (always 0)\n", Kp_vel, Ki_vel, Kd_vel);
   Serial.printf("  Velocity Setpoint: %.3f m/s  Filtered Velocity: %.3f m/s  Raw Velocity: %.3f m/s\n", velocitySetpoint, filteredVelocity, avgVelocity);
   Serial.printf("  Velocity PID Output: %.3f° (angle offset, clamped to ±%.1f°, slew limited)\n", angleSetpointFromVel, VELOCITY_OUTPUT_MAX);
-  Serial.printf("  Velocity Deadband: ±%.3f m/s (when setpoint = 0)\n", VELOCITY_DEADBAND);
+  Serial.printf("  Velocity Deadband: ±%.3f m/s (when setpoint = 0)  Filter alpha: %.2f\n", VELOCITY_DEADBAND, VELOCITY_FILTER_ALPHA);
   Serial.println("ANGLE PID CONTROL (Inner Loop - Balance):");
   Serial.printf("  Angle Kp: %.2f  Angle Ki: %.2f  Angle Kd: %.2f\n", Kp, Ki, Kd);
   Serial.printf("  Base Angle Setpoint: %.2f°\n", baseSetpoint);
@@ -1290,8 +1345,12 @@ bool loadSettings() {
   velocityPID.SetTunings(Kp_vel, Ki_vel, Kd_vel);
   balancePID.SetTunings(Kp, Ki, Kd);
   yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-  
-  angleSetpoint = baseSetpoint + angleSetpointFromVel;
+  if (!useVelocityLoop || FORCE_SINGLE_LOOP_MODE) {
+    angleSetpointFromVel = 0.0;
+    angleSetpoint = baseSetpoint;
+  } else {
+    angleSetpoint = baseSetpoint + angleSetpointFromVel;
+  }
   return true;
 }
 

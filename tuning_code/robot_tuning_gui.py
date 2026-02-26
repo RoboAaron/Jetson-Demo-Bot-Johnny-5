@@ -452,7 +452,9 @@ class SerialReader:
             'i': 'Decrease Angle Ki', 'I': 'Increase Angle Ki',
             'j': 'Decrease Angle Kd', 'D': 'Increase Angle Kd',
             # Velocity Control (Phase 1 Cascaded)
-            'v': 'Decrease Velocity Setpoint', 'V': 'Increase Velocity Setpoint',
+            'v': 'Toggle Velocity Loop ON/OFF',
+            '6': 'Decrease Velocity Setpoint',
+            'V': 'Increase Velocity Setpoint',
             '0': 'Stop Velocity (set to 0.0)',
             # Velocity PID Tuning (PI only - Kd always 0)
             'w': 'Decrease Velocity Kp', 'W': 'Increase Velocity Kp',
@@ -1250,7 +1252,20 @@ class RobotTuningGUI:
         velocity_frame.pack(fill=tk.X, pady=4)
         
         # Velocity Setpoint Control
-        self.create_param_control(velocity_frame, "Vel Setpoint (m/s)", 'v', 'V', 'velocity_setpoint', 0.1)
+        self.create_param_control(velocity_frame, "Vel Setpoint (m/s)", '6', 'V', 'velocity_setpoint', 0.1)
+
+        # Velocity loop enable/disable toggle
+        vel_loop_frame = ttk.Frame(velocity_frame)
+        vel_loop_frame.pack(fill=tk.X, pady=3)
+        ttk.Label(vel_loop_frame, text="Velocity Loop:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            vel_loop_frame,
+            text="Toggle (v)",
+            font=self.button_font,
+            padx=8,
+            pady=2,
+            command=lambda: self.serial_reader.send_command('v')
+        ).pack(side=tk.LEFT, padx=3)
         
         # Current Velocity Display
         vel_display_frame = ttk.Frame(velocity_frame)
@@ -1458,7 +1473,8 @@ Angle PID (Balance):
   j/D - Decrease/Increase Kd (NOTE: 'd' toggles diagnostic mode)
 
 Velocity Control (Phase 1 Cascaded):
-  v/V - Decrease/Increase Velocity Setpoint (m/s)
+  v - Toggle Velocity Loop ON/OFF
+  6/V - Decrease/Increase Velocity Setpoint (m/s)
   w/W - Decrease/Increase Velocity Kp
   e/E - Decrease/Increase Velocity Ki
   r/R - Velocity Kd (disabled - PI only controller, always 0)
