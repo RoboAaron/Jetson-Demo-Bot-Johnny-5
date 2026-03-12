@@ -4,6 +4,42 @@ Tune in this order. Ensure motor/velocity signs in firmware match your VESC conf
 
 ---
 
+## Current status (validated)
+
+Latest parity log `robot_log_20260311_230518.txt` shows cascaded angle-only behavior close to single-loop when parity controls are active:
+
+- Velocity loop OFF, yaw OFF, VESC feedback bypass active.
+- No VEL SIGN MISMATCH and no velocity-noise influence in this mode (`RawVel`/`Vel` stay 0).
+- Roll std is low and stable enough for baseline tuning (much closer to single-loop than prior cascaded runs).
+
+This confirms the main instability gap was implementation-path differences, not a fundamental cascaded architecture failure.
+
+---
+
+## Bring-up gameplan (from parity to full cascaded)
+
+Use this sequence to avoid reintroducing multiple variables at once.
+
+1. **Lock parity baseline**
+   - Keep `useVelocityLoop = OFF`, yaw OFF.
+   - Keep motor output ON and confirm stable 30-60s floor run.
+2. **Enable real actuator path only**
+   - Keep velocity loop OFF.
+   - Keep parity mode ON initially; if stable, test stiction/rate-limit path in short runs.
+3. **Enable velocity feedback (still velocity loop OFF)**
+   - Disable VESC bypass and verify velocity signs and noise behavior.
+   - Do not use VESC success %/Hz from runs where VESC power was toggled during capture.
+4. **Enable velocity loop at zero setpoint**
+   - `useVelocityLoop = ON`, `VelSet = 0.0`.
+   - Verify `angleSetpointFromVel` remains near 0 and no creep appears.
+5. **Tune velocity loop incrementally**
+   - Start with very small non-zero setpoints.
+   - Adjust `Kp_vel` then `Ki_vel` only after inner loop remains stable.
+6. **Only then re-enable yaw lock**
+   - Keep yaw gains small and verify yaw correction does not disturb balance loop.
+
+---
+
 ## 1. Motor direction and velocity sign (match your VESC config)
 
 **VESC configuration:** One motor has a negative sign applied in the VESC so the two motors spin in opposite directions for balance (correct for a differential balance bot). The firmware must match that.

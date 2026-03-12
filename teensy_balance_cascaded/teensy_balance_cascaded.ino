@@ -132,9 +132,13 @@ const float DRIVE_ZERO_EPS = 0.01f;     // Treat commands below this as true zer
 // when velocity+yaw are OFF, emulate single-loop actuator behavior.
 const bool SINGLE_LOOP_PARITY_WHEN_VEL_OFF = true;
 const float PARITY_MIN_CURRENT = 0.1f;
+// True = do not read VESC feedback when velocity loop is OFF (clean angle-only A/B mode).
+const bool BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF = true;
 
 // Fine adjust mode (for smaller tuning steps)
 bool fineAdjust = false;
+// Dry-run mode: keep computing/logging commanded currents but suppress motor commands.
+bool motorOutputEnabled = true;
 const float KP_STEP_COARSE = 0.5;
 const float KP_STEP_FINE = 0.1;
 const float KI_STEP_COARSE = 0.05;
@@ -262,6 +266,21 @@ float applyStictionComp(float cmdA) {
   float mag = fabs(cmdA);
   if (mag < MIN_DRIVE_CURRENT) return s * MIN_DRIVE_CURRENT;
   return cmdA;
+}
+
+// Send current commands unless dry-run mode is active.
+void sendMotorCurrents(float leftA, float rightA) {
+  static bool dryRunZeroSent = false;
+  if (motorOutputEnabled) {
+    dryRunZeroSent = false;
+    vescLeft.setCurrent(leftA);
+    vescRight.setCurrent(rightA);
+  } else if (!dryRunZeroSent) {
+    // Send a single zero command on transition to dry-run, then suppress further writes.
+    vescLeft.setCurrent(0.0f);
+    vescRight.setCurrent(0.0f);
+    dryRunZeroSent = true;
+  }
 }
 
 void setup() {
@@ -441,6 +460,7 @@ void setup() {
   Serial.println("k - Save tuning values to EEPROM");
   Serial.println("g - Load tuning values from EEPROM");
   Serial.println("t - Toggle fine adjust (smaller step sizes)");
+  Serial.println("o - Toggle motor output ON/OFF (dry-run keeps commanded amps in logs)");
   Serial.println();
   Serial.println("=== LOGGING COMMANDS ===");
   Serial.println("l - Start logging");
@@ -464,6 +484,7 @@ void loop() {
     char cmd = Serial.read();
     handleCommand(cmd);
   }
+  bool velocityLoopActive = useVelocityLoop && !FORCE_SINGLE_LOOP_MODE;
   
   // Get IMU data with failure tracking
   bool imuDataReceived = false;
@@ -505,22 +526,26 @@ void loop() {
       Serial.printf("📊 I2C Stats: Success=%lu (%.1f%%), Fail=%lu, Total=%lu\n", 
                     imuReadCount, successRate, imuFailCount, totalReads);
       
-      unsigned long totalVesc = vescSuccessCount + vescFailCount;
-      if (totalVesc > 0) {
-        float vescRate = 100.0f * vescSuccessCount / totalVesc;
-        // Calculate VESC read rate (Hz) - based on update interval and success rate
-        float theoreticalHz = 1000.0f / VESC_UPDATE_INTERVAL_MS;  // Max theoretical rate
-        float actualHz = theoreticalHz * (vescRate / 100.0f);  // Actual rate based on success
-        
-        if (actualHz > 0.1 && vescSuccessCount > 10) {
-          Serial.printf("📊 VESC Stats: Success=%lu (%.1f%%), Fail=%lu, Rate=%.1f Hz\n", 
-                        vescSuccessCount, vescRate, vescFailCount, actualHz);
-        } else {
-          Serial.printf("📊 VESC Stats: Success=%lu (%.1f%%), Fail=%lu, Rate=-- Hz (inactive)\n", 
-                        vescSuccessCount, vescRate, vescFailCount);
-        }
+      if (BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF && !velocityLoopActive) {
+        Serial.println("📊 VESC Stats: Feedback bypassed (velocity loop OFF)");
       } else {
-        Serial.printf("📊 VESC Stats: No reads yet, Rate=-- Hz (inactive)\n");
+        unsigned long totalVesc = vescSuccessCount + vescFailCount;
+        if (totalVesc > 0) {
+          float vescRate = 100.0f * vescSuccessCount / totalVesc;
+          // Calculate VESC read rate (Hz) - based on update interval and success rate
+          float theoreticalHz = 1000.0f / VESC_UPDATE_INTERVAL_MS;  // Max theoretical rate
+          float actualHz = theoreticalHz * (vescRate / 100.0f);  // Actual rate based on success
+          
+          if (actualHz > 0.1 && vescSuccessCount > 10) {
+            Serial.printf("📊 VESC Stats: Success=%lu (%.1f%%), Fail=%lu, Rate=%.1f Hz\n", 
+                          vescSuccessCount, vescRate, vescFailCount, actualHz);
+          } else {
+            Serial.printf("📊 VESC Stats: Success=%lu (%.1f%%), Fail=%lu, Rate=-- Hz (inactive)\n", 
+                          vescSuccessCount, vescRate, vescFailCount);
+          }
+        } else {
+          Serial.printf("📊 VESC Stats: No reads yet, Rate=-- Hz (inactive)\n");
+        }
       }
       
       lastIMUStats = millis();
@@ -562,7 +587,8 @@ void loop() {
   static float lastLeftERPM = 0.0, lastRightERPM = 0.0;
   static float lastLeftMechRPM = 0.0, lastRightMechRPM = 0.0;
   
-  if (millis() - lastVescRead >= VESC_UPDATE_INTERVAL_MS) {
+  if (!BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF || velocityLoopActive) {
+    if (millis() - lastVescRead >= VESC_UPDATE_INTERVAL_MS) {
     lastVescRead = millis();
     
     // Read left VESC
@@ -632,11 +658,17 @@ void loop() {
     float sum = 0.0f;
     int n = velocityMaFilled ? VELOCITY_MA_SIZE : (velocityEmaIndex == 0 ? 1 : velocityEmaIndex);
     for (int i = 0; i < n; i++) sum += velocityEmaBuffer[i];
-    filteredVelocity = sum / (float)n;
+      filteredVelocity = sum / (float)n;
+    }
+  } else {
+    // True angle-only mode: bypass velocity feedback path entirely.
+    leftVelocity = 0.0f;
+    rightVelocity = 0.0f;
+    avgVelocity = 0.0f;
+    filteredVelocity = 0.0f;
   }
   
   // === CHANGED === Compute every loop so angleSetpoint is correct every cycle (not only every 50ms).
-  bool velocityLoopActive = useVelocityLoop && !FORCE_SINGLE_LOOP_MODE;
   bool inDeadband = (fabs(velocitySetpoint) < 0.01f) && (fabs(filteredVelocity) < VELOCITY_DEADBAND);
   bool velocityOutputActive = velocityLoopActive && !inDeadband;
 
@@ -726,8 +758,7 @@ void loop() {
       angleSetpointFromVel = 0.0;  // Reset velocity PID output
       if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
         lastMotorWrite = millis();
-        vescLeft.setCurrent(0.0);
-        vescRight.setCurrent(0.0);
+        sendMotorCurrents(0.0f, 0.0f);
       }
 
       static unsigned long lastSafetyDebug = 0;
@@ -820,8 +851,7 @@ void loop() {
         rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
 
         // Match single-loop behavior: write each loop (no 67Hz gate).
-        vescLeft.setCurrent(leftMotorCurrent);
-        vescRight.setCurrent(rightMotorCurrent);
+        sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
         lastMotorWrite = millis();
       } else {
         // Apply stiction compensation: jump over static friction threshold
@@ -836,8 +866,7 @@ void loop() {
         // CRITICAL-7: Rate-limit motor writes to ~67 Hz (match VESC read rate)
         if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
           lastMotorWrite = millis();
-          vescLeft.setCurrent(leftMotorCurrent);
-          vescRight.setCurrent(rightMotorCurrent);
+          sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
         }
       }
       
@@ -865,8 +894,7 @@ void loop() {
     // IMU not working - disable motors (rate-limited)
     if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
       lastMotorWrite = millis();
-      vescLeft.setCurrent(0.0);
-      vescRight.setCurrent(0.0);
+      sendMotorCurrents(0.0f, 0.0f);
     }
     motorCurrent = 0.0;
     leftMotorCurrent = 0.0;
@@ -1000,6 +1028,17 @@ void handleCommand(char cmd) {
     case '0':
       velocitySetpoint = 0.0;
       Serial.println("Velocity Setpoint = 0.000 m/s (stop and balance)");
+      break;
+
+    case 'o':
+    case 'O':
+      motorOutputEnabled = !motorOutputEnabled;
+      if (!motorOutputEnabled) {
+        sendMotorCurrents(0.0f, 0.0f);
+        Serial.println("Motor output DISABLED (dry-run): no motor commands sent, commanded amps still logged");
+      } else {
+        Serial.println("Motor output ENABLED");
+      }
       break;
     
     // VELOCITY PID TUNING (PI only - Kd always 0)
@@ -1248,6 +1287,7 @@ void printTuningValues() {
   Serial.println("╚════════════════════════════════════════════════════╝");
   Serial.println("VELOCITY PID CONTROL (Outer Loop - PI only):");
   Serial.printf("  useVelocityLoop: %s  (v to toggle, OFF = single-loop mode)\n", useVelocityLoop ? "ON" : "OFF");
+  Serial.printf("  Motor Output: %s (o to toggle dry-run)\n", motorOutputEnabled ? "ENABLED" : "DISABLED");
   Serial.printf("  Velocity Kp: %.3f  Velocity Ki: %.3f  Velocity Kd: %.3f (always 0)\n", Kp_vel, Ki_vel, Kd_vel);
   Serial.printf("  Velocity Setpoint: %.3f m/s  Filtered Velocity: %.3f m/s  Raw Velocity: %.3f m/s\n", velocitySetpoint, filteredVelocity, avgVelocity);
   Serial.printf("  Velocity PID Output: %.3f° (angle offset, clamped to ±%.1f°, slew limited)\n", angleSetpointFromVel, VELOCITY_OUTPUT_MAX);

@@ -93,7 +93,8 @@ class SerialReader:
             'drive_offset': 0.0,
             # Velocity control (Phase 1)
             'velocity_setpoint': 0.0,  # Target velocity in m/s
-            'use_vel_loop': False   # Velocity loop ON/OFF (cascaded mode)
+            'use_vel_loop': False,   # Velocity loop ON/OFF (cascaded mode)
+            'motor_output_enabled': True  # Dry-run motor output state (o toggle)
         }
         
         # Control direction state
@@ -866,6 +867,8 @@ class SerialReader:
             (r'Yaw Control:\s+(\w+)', 'yaw_control_enabled'),  # Will parse "ENABLED" or "DISABLED"
             (r'useVelocityLoop:\s+(\w+)', 'use_vel_loop'),     # "ON" or "OFF"
             (r'Velocity loop\s+(\w+)', 'use_vel_loop'),        # "ENABLED" or "DISABLED" (after pressing v)
+            (r'Motor Output:\s+(\w+)', 'motor_output_enabled'), # "ENABLED" or "DISABLED"
+            (r'Motor output\s+(\w+)', 'motor_output_enabled'),  # "ENABLED" or "DISABLED" (after pressing o)
             # Legacy patterns for backward compatibility (deprecated - should not match if Roll/Yaw/Velocity labels are present)
             # Use negative lookbehind to prevent matching if Roll/Yaw/Velocity prefix exists
             # NOTE: Lookbehind must be fixed-width, so we use single space \s (not \s+)
@@ -903,6 +906,11 @@ class SerialReader:
                     # Parse "ON"/"OFF" or "ENABLED"/"DISABLED" to boolean
                     raw = match.group(1).upper()
                     tuning_updates[key] = (raw == "ON" or raw == "ENABLED")
+                    break
+                elif key == 'motor_output_enabled':
+                    # Parse "ENABLED"/"DISABLED" to boolean
+                    raw = match.group(1).upper()
+                    tuning_updates[key] = (raw == "ENABLED" or raw == "ON")
                     break
                 else:
                     tuning_updates[key] = float(match.group(1))
@@ -1354,6 +1362,15 @@ class RobotTuningGUI:
         self.create_param_control(motor_frame, "Max Current (A)", 'm', 'M', 'max_current', 0.5)
         # Angle Setpoint: Target roll angle for balance (typically -3° to +3°, not necessarily 0°)
         self.create_param_control(motor_frame, "Angle Setpoint (°)", 'z', 'Z', 'angle_setpoint', 0.1)
+        
+        # Motor output enable/disable (dry-run mode)
+        motor_out_frame = ttk.Frame(motor_frame)
+        motor_out_frame.pack(fill=tk.X, pady=3)
+        ttk.Label(motor_out_frame, text="Motor Output:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
+        self.motor_output_status_label = ttk.Label(motor_out_frame, text="ENABLED", font=self.medium_font, width=12, anchor=tk.CENTER)
+        self.motor_output_status_label.pack(side=tk.LEFT, padx=6)
+        tk.Button(motor_out_frame, text="Toggle (o)", font=self.button_font, padx=8, pady=2,
+                 command=lambda: self.serial_reader.send_command('o')).pack(side=tk.LEFT, padx=3)
     
     def create_param_control(self, parent, label, dec_cmd, inc_cmd, param_key, step):
         """Create a parameter control row with larger, more readable controls"""
@@ -1556,6 +1573,7 @@ Save/Load Settings:
 
 Other:
   d - Toggle diagnostic mode
+  o - Toggle motor output ON/OFF (dry-run)
   x/X - Show all tuning values
   @ - Sync GUI with firmware parameters
   SPACE - Pause/Resume data stream
@@ -1726,6 +1744,13 @@ GUI Features:
             vel_loop_text = "ON" if use_vel_loop else "OFF"
             vel_loop_color = "green" if use_vel_loop else "gray"
             self.velocity_loop_status_label.config(text=vel_loop_text, foreground=vel_loop_color)
+
+        # Update motor output status (dry-run toggle)
+        if hasattr(self, 'motor_output_status_label'):
+            motor_enabled = tuning.get('motor_output_enabled', True)
+            motor_text = "ENABLED" if motor_enabled else "DISABLED"
+            motor_color = "green" if motor_enabled else "orange"
+            self.motor_output_status_label.config(text=motor_text, foreground=motor_color)
         
         # Sync fine adjust checkbox with firmware state
         if hasattr(self, 'fine_adjust_enabled'):
