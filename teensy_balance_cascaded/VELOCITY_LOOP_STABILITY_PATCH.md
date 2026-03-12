@@ -1,5 +1,17 @@
 # Velocity Loop Stability Patch - Summary
 
+## Status
+
+**ARCHIVED / SUPERSEDED DOCUMENT**
+
+- This patch summary is retained as historical context.
+- The current authoritative plan is in `teensy_balance_cascaded/TUNING_RECOMMENDATIONS.md`, specifically:
+  - `Current status (validated)`
+  - `Bring-up gameplan (from parity to full cascaded)`
+- If guidance here conflicts with `TUNING_RECOMMENDATIONS.md`, follow `TUNING_RECOMMENDATIONS.md`.
+
+---
+
 ## Changes Implemented
 
 ### 1. Velocity PID Update Rate: 20 Hz (50ms)

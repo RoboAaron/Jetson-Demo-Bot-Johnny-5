@@ -4,6 +4,14 @@ Tune in this order. Ensure motor/velocity signs in firmware match your VESC conf
 
 ---
 
+## Plan status (read first)
+
+- **ACTIVE PLAN (latest):** `Current status (validated)` + `Bring-up gameplan (from parity to full cascaded)` in this document.
+- **ARCHIVED / SUPERSEDED:** Everything under `Archived plans (historical reference)` is kept for history and comparison, but is not the current step-by-step plan.
+- **When in doubt:** Follow the active bring-up gameplan first, then reuse archived details only if needed for targeted troubleshooting.
+
+---
+
 ## Current status (validated)
 
 Latest parity log `robot_log_20260311_230518.txt` shows cascaded angle-only behavior close to single-loop when parity controls are active:
@@ -37,6 +45,12 @@ Use this sequence to avoid reintroducing multiple variables at once.
    - Adjust `Kp_vel` then `Ki_vel` only after inner loop remains stable.
 6. **Only then re-enable yaw lock**
    - Keep yaw gains small and verify yaw correction does not disturb balance loop.
+
+---
+
+## Archived plans (historical reference)
+
+The sections below were useful during earlier debugging phases, but they are now **superseded** by the active bring-up gameplan above.
 
 ---
 
