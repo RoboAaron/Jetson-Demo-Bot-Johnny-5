@@ -83,10 +83,14 @@ double angleSetpoint = 0.0;   // Active setpoint = baseSetpoint + angleSetpointF
 double angleInput;             // Current roll angle (degrees)
 double motorCurrent;           // PID output: motor current (Amps)
 
-// === CHANGED === Angle PID defaults: match single-loop territory (Kp 4.5–6, Kd 0.25–0.4) for stability.
+// Angle PID defaults tuned to match the filtered single-loop controller.
 double Kp = 5.0;    // Proportional gain (single-loop used 5.0; tune 4.5–6.0)
 double Ki = 0.0;    // Integral gain (start 0, add small later if needed)
-double Kd = 0.3;    // Derivative gain (single-loop used 0.3; 0.25–0.40)
+double Kd = 0.03;   // Lower starting Kd: raw 500 Hz angle data made 0.3 saturate constantly
+
+// Angle input low-pass filter for derivative-noise suppression.
+// Alpha = 0.3 gives roughly a 24 Hz cutoff at the 500 Hz angle PID rate.
+float angleFilterAlpha = 0.3f;
 
 PID balancePID(&angleInput, &motorCurrent, &angleSetpoint, Kp, Ki, Kd, DIRECT);
 
@@ -123,6 +127,11 @@ float minCurrent = 0.0;  // DEPRECATED: Use stiction compensation instead (kept 
 // Without this, small PID corrections produce no motion, destabilizing velocity control.
 const float MIN_DRIVE_CURRENT = 0.55f;  // Stiction breakaway current (Amps)
 const float DRIVE_ZERO_EPS = 0.01f;     // Treat commands below this as true zero (Amps)
+
+// Single-loop parity mode for algorithm A/B isolation:
+// when velocity+yaw are OFF, emulate single-loop actuator behavior.
+const bool SINGLE_LOOP_PARITY_WHEN_VEL_OFF = true;
+const float PARITY_MIN_CURRENT = 0.1f;
 
 // Fine adjust mode (for smaller tuning steps)
 bool fineAdjust = false;
@@ -166,8 +175,9 @@ struct SavedSettings {
   float ki_yaw;
   float kd_yaw;
   bool yawControlEnabled;
+  float angleFilterAlpha;
 };
-const uint32_t SETTINGS_MAGIC = 0xC45C4DED;  // Different magic number for cascaded version
+const uint32_t SETTINGS_MAGIC = 0xC45C4DEE;  // Bump to add angleFilterAlpha and reset unstable defaults
 
 bool loadSettings();
 void saveSettings();
@@ -219,6 +229,9 @@ bool streamData = true;
 unsigned long logStartTime = 0;
 unsigned long lastLogTime = 0;
 const unsigned long LOG_INTERVAL = 20; // 50Hz logging
+
+// Motor write rate limit (CRITICAL-7: match VESC read rate to prevent buffer overflow / loop jitter)
+static unsigned long lastMotorWrite = 0;
 
 // Data arrays for analysis
 struct LogData {
@@ -697,26 +710,50 @@ void loop() {
   if (imuWorking) {
     // Safety check - disable motors if robot is too far tilted
     bool isBalanceable = (abs(roll) < 25.0);
-    
+    // CRITICAL-1: Freeze PIDs when in safety cutoff so integral doesn't wind up; thaw on re-enter.
+    static bool pidFrozen = false;
+
     if (!isBalanceable) {
-      // Safety: Robot too far tilted, disable motors
-      vescLeft.setCurrent(0.0);
-      vescRight.setCurrent(0.0);
+      if (!pidFrozen) {
+        balancePID.SetMode(MANUAL);
+        velocityPID.SetMode(MANUAL);
+        yawPID.SetMode(MANUAL);
+        pidFrozen = true;
+      }
       motorCurrent = 0.0;
       leftMotorCurrent = 0.0;
       rightMotorCurrent = 0.0;
       angleSetpointFromVel = 0.0;  // Reset velocity PID output
-      
+      if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
+        lastMotorWrite = millis();
+        vescLeft.setCurrent(0.0);
+        vescRight.setCurrent(0.0);
+      }
+
       static unsigned long lastSafetyDebug = 0;
       if (millis() - lastSafetyDebug > 1000) {
         Serial.printf("⚠️  SAFETY: Roll=%.2f° exceeds limit (25°) - Motors DISABLED\n", roll);
         lastSafetyDebug = millis();
       }
     } else {
+      if (pidFrozen) {
+        balancePID.SetMode(AUTOMATIC);
+        velocityPID.SetMode(AUTOMATIC);
+        yawPID.SetMode(AUTOMATIC);
+        pidFrozen = false;
+      }
       // NORMAL CONTROL: Cascaded PID
       // === CHANGED === angleSetpoint already set above (baseSetpoint or base+angleFromVel); do not overwrite here.
-      // Set angle PID input to current roll angle
-      angleInput = roll;
+      // Low-pass filter the angle input before the derivative term sees it.
+      // Without this, tiny sample-to-sample IMU changes at 500 Hz become huge Kd spikes.
+      static float angleFiltered = 0.0f;
+      static bool angleFilterInitialized = false;
+      if (!angleFilterInitialized) {
+        angleFiltered = roll;
+        angleFilterInitialized = true;
+      }
+      angleFiltered = angleFilterAlpha * roll + (1.0f - angleFilterAlpha) * angleFiltered;
+      angleInput = angleFiltered;
       
       outputCurrent = 0.0;
       
@@ -771,19 +808,38 @@ void loop() {
       // This compensates for motors that are inverted in VESC config
       leftMotorCurrent *= LEFT_MOTOR_DIRECTION_SIGN;
       rightMotorCurrent *= RIGHT_MOTOR_DIRECTION_SIGN;
-      
-      // Apply stiction compensation: jump over static friction threshold
-      // This ensures small PID corrections produce actual motor torque
-      leftMotorCurrent = applyStictionComp(leftMotorCurrent);
-      rightMotorCurrent = applyStictionComp(rightMotorCurrent);
-      
-      // Constrain to safety limits after stiction compensation
-      leftMotorCurrent = constrain(leftMotorCurrent, -maxCurrent, maxCurrent);
-      rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
-      
-      // Send to motors
-      vescLeft.setCurrent(leftMotorCurrent);
-      vescRight.setCurrent(rightMotorCurrent);
+
+      // In parity mode, match single-loop actuation when velocity and yaw are off.
+      bool parityModeActive = SINGLE_LOOP_PARITY_WHEN_VEL_OFF && !velocityLoopActive && !yawControlEnabled;
+      if (parityModeActive) {
+        // Single-loop style small-output deadzone (instead of 0.55A stiction jump).
+        if (fabs(leftMotorCurrent) < PARITY_MIN_CURRENT) leftMotorCurrent = 0.0f;
+        if (fabs(rightMotorCurrent) < PARITY_MIN_CURRENT) rightMotorCurrent = 0.0f;
+
+        leftMotorCurrent = constrain(leftMotorCurrent, -maxCurrent, maxCurrent);
+        rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
+
+        // Match single-loop behavior: write each loop (no 67Hz gate).
+        vescLeft.setCurrent(leftMotorCurrent);
+        vescRight.setCurrent(rightMotorCurrent);
+        lastMotorWrite = millis();
+      } else {
+        // Apply stiction compensation: jump over static friction threshold
+        // This ensures small PID corrections produce actual motor torque
+        leftMotorCurrent = applyStictionComp(leftMotorCurrent);
+        rightMotorCurrent = applyStictionComp(rightMotorCurrent);
+
+        // Constrain to safety limits after stiction compensation
+        leftMotorCurrent = constrain(leftMotorCurrent, -maxCurrent, maxCurrent);
+        rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
+
+        // CRITICAL-7: Rate-limit motor writes to ~67 Hz (match VESC read rate)
+        if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
+          lastMotorWrite = millis();
+          vescLeft.setCurrent(leftMotorCurrent);
+          vescRight.setCurrent(rightMotorCurrent);
+        }
+      }
       
       // === CHANGED === Rich debug every 100 ms when logging enabled (angleInput, setpoint, vel, deadband, useVelocityLoop, current).
       static unsigned long lastDebug = 0;
@@ -806,9 +862,12 @@ void loop() {
       }
     }
   } else {
-    // IMU not working - disable motors
-    vescLeft.setCurrent(0.0);
-    vescRight.setCurrent(0.0);
+    // IMU not working - disable motors (rate-limited)
+    if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
+      lastMotorWrite = millis();
+      vescLeft.setCurrent(0.0);
+      vescRight.setCurrent(0.0);
+    }
     motorCurrent = 0.0;
     leftMotorCurrent = 0.0;
     rightMotorCurrent = 0.0;
@@ -824,9 +883,9 @@ void loop() {
       float angleError = roll - angleSetpoint;
       float yawError = yaw - yawSetpoint;
       const char* modeStr = (controlMode == MODE_DIAGNOSTIC) ? "DIAG" : "PID";
-      // Log: Roll, Pitch, Yaw, RollError, YawError, Vel, VelSetpt, VelPID_Out, RollPID_Out, YawPID_Out, LeftMotor, RightMotor, Setpoint, Mode, YawCtrl, Logging
-      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s\n", 
-                   roll, pitch, yaw, angleError, yawError, filteredVelocity, velocitySetpoint, angleSetpointFromVel,
+      // Log: Roll, Pitch, Yaw, RollError, YawError, Vel (filtered), RawVel (avg before filter), VelSetpt, VelPID_Out, RollPID_Out, YawPID_Out, LeftMotor, RightMotor, Setpoint, Mode, YawCtrl, Logging
+      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,RawVel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s\n",
+                   roll, pitch, yaw, angleError, yawError, filteredVelocity, avgVelocity, velocitySetpoint, angleSetpointFromVel,
                    motorCurrent, yawOutput, leftMotorCurrent, rightMotorCurrent, angleSetpoint,
                    modeStr, yawControlEnabled ? "ON" : "OFF", loggingEnabled ? "ON" : "OFF");
     } else {
@@ -1000,6 +1059,18 @@ void handleCommand(char cmd) {
       balancePID.SetTunings(Kp, Ki, Kd);
       Serial.printf("Angle Kd = %.2f (increased)\n", Kd);
       break;
+
+    case 'a':
+      angleFilterAlpha -= (fineAdjust ? 0.01f : 0.05f);
+      if (angleFilterAlpha < 0.0f) angleFilterAlpha = 0.0f;
+      Serial.printf("Angle Filter Alpha = %.2f (decreased, more smoothing)\n", angleFilterAlpha);
+      break;
+
+    case 'A':
+      angleFilterAlpha += (fineAdjust ? 0.01f : 0.05f);
+      if (angleFilterAlpha > 1.0f) angleFilterAlpha = 1.0f;
+      Serial.printf("Angle Filter Alpha = %.2f (increased, less smoothing)\n", angleFilterAlpha);
+      break;
     
     // ANGLE SETPOINT tuning
     case 'z':
@@ -1158,12 +1229,14 @@ void handleCommand(char cmd) {
 void sendSyncData() {
   Serial.printf("SYNC:Kp=%.3f,Ki=%.3f,Kd=%.3f,Kp_vel=%.3f,Ki_vel=%.3f,Kd_vel=%.3f,"
                 "Kp_yaw=%.3f,Ki_yaw=%.3f,Kd_yaw=%.3f,setpoint=%.3f,maxCurrent=%.2f,"
+                "angleFilterAlpha=%.3f,"
                 "velSetpoint=%.3f,yawEnabled=%d,fineAdjust=%d,useVelLoop=%d,"
                 "leftMotorSign=%.1f,rightMotorSign=%.1f,leftVelSign=%.1f,rightVelSign=%.1f\n",
                 Kp, Ki, Kd,
                 Kp_vel, Ki_vel, Kd_vel,
                 Kp_yaw, Ki_yaw, Kd_yaw,
                 baseSetpoint, maxCurrent,
+                angleFilterAlpha,
                 velocitySetpoint, yawControlEnabled ? 1 : 0, fineAdjust ? 1 : 0, useVelocityLoop ? 1 : 0,
                 LEFT_MOTOR_DIRECTION_SIGN, RIGHT_MOTOR_DIRECTION_SIGN,
                 LEFT_VELOCITY_SIGN, RIGHT_VELOCITY_SIGN);
@@ -1181,6 +1254,7 @@ void printTuningValues() {
   Serial.printf("  Velocity Deadband: ±%.3f m/s (when setpoint = 0)  Filter alpha: %.2f\n", VELOCITY_DEADBAND, VELOCITY_FILTER_ALPHA);
   Serial.println("ANGLE PID CONTROL (Inner Loop - Balance):");
   Serial.printf("  Angle Kp: %.2f  Angle Ki: %.2f  Angle Kd: %.2f\n", Kp, Ki, Kd);
+  Serial.printf("  Angle Filter Alpha: %.2f (~%.0f Hz cutoff)\n", angleFilterAlpha, -logf(1.0f - angleFilterAlpha) / (2.0f * PI * (PID_SAMPLE_TIME_MS / 1000.0f)));
   Serial.printf("  Base Angle Setpoint: %.2f°\n", baseSetpoint);
   Serial.printf("  Active Setpoint: %.2f° (base + velocity offset)\n", angleSetpoint);
   Serial.println("YAW PID CONTROL (Rotation):");
@@ -1323,6 +1397,7 @@ bool loadSettings() {
   Ki_yaw = settings.ki_yaw;
   Kd_yaw = settings.kd_yaw;
   yawControlEnabled = settings.yawControlEnabled;
+  angleFilterAlpha = settings.angleFilterAlpha;
   
   // Validate and reset if corrupted (PI only - Kd always 0)
   if (isnan(Kp_vel) || isinf(Kp_vel) || Kp_vel < 0 || Kp_vel > 10.0) {
@@ -1340,6 +1415,9 @@ bool loadSettings() {
   }
   if (isnan(Kd_yaw) || isinf(Kd_yaw) || Kd_yaw < 0 || Kd_yaw > 5.0) {
     Kd_yaw = 0.0;
+  }
+  if (isnan(angleFilterAlpha) || isinf(angleFilterAlpha) || angleFilterAlpha < 0.0f || angleFilterAlpha > 1.0f) {
+    angleFilterAlpha = 0.3f;
   }
   
   velocityPID.SetTunings(Kp_vel, Ki_vel, Kd_vel);
@@ -1370,6 +1448,7 @@ void saveSettings() {
   settings.ki_yaw = Ki_yaw;
   settings.kd_yaw = Kd_yaw;
   settings.yawControlEnabled = yawControlEnabled;
+  settings.angleFilterAlpha = angleFilterAlpha;
   EEPROM.put(0, settings);
 }
 

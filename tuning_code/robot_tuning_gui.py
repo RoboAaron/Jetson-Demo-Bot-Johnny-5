@@ -78,6 +78,7 @@ class SerialReader:
             'Kp': 5.0,
             'Ki': 0.1,
             'Kd': 0.3,
+            'angle_filter_alpha': 0.3,
             # Yaw PID (rotation control)
             'Kp_yaw': 0.5,
             'Ki_yaw': 0.0,
@@ -91,7 +92,8 @@ class SerialReader:
             'velocity_damping': 0.0,
             'drive_offset': 0.0,
             # Velocity control (Phase 1)
-            'velocity_setpoint': 0.0  # Target velocity in m/s
+            'velocity_setpoint': 0.0,  # Target velocity in m/s
+            'use_vel_loop': False   # Velocity loop ON/OFF (cascaded mode)
         }
         
         # Control direction state
@@ -635,116 +637,124 @@ class SerialReader:
         # New single-loop: R:0.00,P:0.00,Y:0.00,Err:0.00,Curr:0.00,Setpt:0.00,Mode:PID,Log:OFF
         
         # Try Phase 1 cascaded format first (with velocity data)
-        # Format: R:roll,P:pitch,Y:yaw,Err:rollError,YawErr:yawError,Vel:velocity,VelSet:velocitySetpoint,VelPID:velocityPID,RollOut:rollPID,YawOut:yawPID,Left:leftMotor,Right:rightMotor,Setpt:setpoint,Mode:mode,Yaw:yawCtrl,Log:logging
-        # Groups: 1=R, 2=P, 3=Y, 4=Err, 5=YawErr, 6=Vel, 7=VelSet, 8=VelPID, 9=RollOut, 10=YawOut, 11=Left, 12=Right, 13=Setpt, 14=Mode, 15=Yaw, 16=Log
-        match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),YawErr:([-\d.]+),Vel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),RollOut:([-\d.]+),YawOut:([-\d.]+),Left:([-\d.]+),Right:([-\d.]+),Setpt:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)', line)
-        
+        # New format includes RawVel: R:...,Vel:filtered,RawVel:raw,VelSet:...,VelPID:...
+        match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),YawErr:([-\d.]+),Vel:([-\d.]+),RawVel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),RollOut:([-\d.]+),YawOut:([-\d.]+),Left:([-\d.]+),Right:([-\d.]+),Setpt:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)', line)
         if match:
-            # Phase 1 cascaded format with velocity control
+            # New cascaded format (with RawVel)
             imu_update = {
                 'roll': float(match.group(1)),
                 'pitch': float(match.group(2)),
                 'yaw': float(match.group(3)),
-                'position': 0.0,  # Position not yet implemented in Phase 1
-                'velocity_setpoint': float(match.group(7)),
+                'position': 0.0,
+                'velocity_setpoint': float(match.group(8)),
                 'velocity_actual': float(match.group(6)),
-                'current': float(match.group(9)),  # Roll PID output
-                'roll_pid_output': float(match.group(9)),
-                'yaw_pid_output': float(match.group(10)),  # Yaw PID output
-                'left_motor_current': float(match.group(11)),
-                'right_motor_current': float(match.group(12)),
+                'velocity_raw': float(match.group(7)),
+                'current': float(match.group(10)),
+                'roll_pid_output': float(match.group(10)),
+                'yaw_pid_output': float(match.group(11)),
+                'left_motor_current': float(match.group(12)),
+                'right_motor_current': float(match.group(13)),
                 'balance_status': 'OK',
-                'logging': match.group(16),
-                'control_mode': match.group(14)
+                'logging': match.group(17),
+                'control_mode': match.group(15)
             }
-            mode_str = match.group(14)
-            # Extract setpoint and velocity setpoint from stream
-            tuning_updates['angle_setpoint'] = float(match.group(13))
-            tuning_updates['velocity_setpoint'] = float(match.group(7))
-            # Extract velocity PID output (angle offset from velocity loop)
-            tuning_updates['velocity_pid_output'] = float(match.group(8))
-            # Extract yaw control enabled state
-            tuning_updates['yaw_control_enabled'] = (match.group(15) == "ON")
+            mode_str = match.group(15)
+            tuning_updates['angle_setpoint'] = float(match.group(14))
+            tuning_updates['velocity_setpoint'] = float(match.group(8))
+            tuning_updates['velocity_pid_output'] = float(match.group(9))
+            tuning_updates['yaw_control_enabled'] = (match.group(16) == "ON")
         else:
-            # Try old cascaded format
-            match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Pos:([-\d.]+),VelSet:([-\d.]+),VelAct:([-\d.]+),Curr:([-\d.]+),Bal:(\w+),Log:(\w+)', line)
-            
+            # Old cascaded format (no RawVel)
+            match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),YawErr:([-\d.]+),Vel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),RollOut:([-\d.]+),YawOut:([-\d.]+),Left:([-\d.]+),Right:([-\d.]+),Setpt:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)', line)
             if match:
-                # Old cascaded format
                 imu_update = {
                     'roll': float(match.group(1)),
                     'pitch': float(match.group(2)),
                     'yaw': float(match.group(3)),
-                    'position': float(match.group(4)),
-                    'velocity_setpoint': float(match.group(5)),
+                    'position': 0.0,
+                    'velocity_setpoint': float(match.group(7)),
                     'velocity_actual': float(match.group(6)),
-                    'current': float(match.group(7)),
-                    'balance_status': match.group(8),
-                    'logging': match.group(9)
+                    'current': float(match.group(9)),
+                    'roll_pid_output': float(match.group(9)),
+                    'yaw_pid_output': float(match.group(10)),
+                    'left_motor_current': float(match.group(11)),
+                    'right_motor_current': float(match.group(12)),
+                    'balance_status': 'OK',
+                    'logging': match.group(16),
+                    'control_mode': match.group(14)
                 }
-                tuning_updates['velocity_setpoint'] = float(match.group(5))
+                mode_str = match.group(14)
+                tuning_updates['angle_setpoint'] = float(match.group(13))
+                tuning_updates['velocity_setpoint'] = float(match.group(7))
+                tuning_updates['velocity_pid_output'] = float(match.group(8))
+                tuning_updates['yaw_control_enabled'] = (match.group(15) == "ON")
             else:
-                # Try new single-loop format with motor currents: 
-                # R:roll,P:pitch,Y:yaw,Err:rollError,YawErr:yawError,RollOut:rollPID,YawOut:yawPID,Left:leftMotor,Right:rightMotor,Setpt:setpoint,Drive:driveOffset,Mode:mode,Yaw:yawCtrl,Log:logging
-                # Groups: 1=R, 2=P, 3=Y, 4=Err, 5=YawErr, 6=RollOut, 7=YawOut, 8=Left, 9=Right, 10=Setpt, 11=Drive, 12=Mode, 13=Yaw, 14=Log
-                match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),YawErr:([-\d.]+),RollOut:([-\d.]+),YawOut:([^,]+),Left:([-\d.]+),Right:([-\d.]+),Setpt:([-\d.]+),Drive:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)', line)
-            if match:
-                # Handle nan values in YawOut (convert to 0.0)
-                yaw_out_str = match.group(7)
-                try:
-                    yaw_out = float(yaw_out_str) if 'nan' not in yaw_out_str.lower() else 0.0
-                except (ValueError, TypeError):
-                    yaw_out = 0.0
-                
-                imu_update = {
-                    'roll': float(match.group(1)),
-                    'pitch': float(match.group(2)),
-                    'yaw': float(match.group(3)),
-                    'position': 0.0,  # Not used in single-loop
-                    'velocity_setpoint': 0.0,  # Not used in single-loop
-                    'velocity_actual': 0.0,  # Not used in single-loop
-                    'current': float(match.group(6)),  # Roll PID output
-                    'roll_pid_output': float(match.group(6)),  # Roll PID output (before yaw correction)
-                    'yaw_pid_output': yaw_out,  # Yaw PID output
-                    'left_motor_current': float(match.group(8)),  # Final left motor current
-                    'right_motor_current': float(match.group(9)),  # Final right motor current
-                    'balance_status': 'OK',  # Assume OK if data is coming
-                    'logging': match.group(14),  # Logging status
-                    'control_mode': match.group(12)  # Control mode
-                }
-                mode_str = match.group(12)  # Control mode
-                # Extract setpoint from data stream (Setpt: value)
-                setpoint_from_stream = float(match.group(10))
-                # Update tuning values with setpoint from stream
-                tuning_updates['angle_setpoint'] = setpoint_from_stream
-                # Extract drive offset
-                tuning_updates['drive_offset'] = float(match.group(11))
-                # Update yaw control enabled state
-                tuning_updates['yaw_control_enabled'] = (match.group(13) == "ON")
-            else:
-                # Fallback: try format without yaw info (backward compatibility)
-                match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),Curr:([-\d.]+),Setpt:([-\d.]+)(?:,Drive:([-\d.]+))?,Mode:(\w+),Log:(\w+)', line)
+                # Try old cascaded format (Pos, VelSet, VelAct)
+                match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Pos:([-\d.]+),VelSet:([-\d.]+),VelAct:([-\d.]+),Curr:([-\d.]+),Bal:(\w+),Log:(\w+)', line)
                 if match:
                     imu_update = {
                         'roll': float(match.group(1)),
                         'pitch': float(match.group(2)),
                         'yaw': float(match.group(3)),
-                        'position': 0.0,  # Not used in single-loop
-                        'velocity_setpoint': 0.0,  # Not used in single-loop
-                        'velocity_actual': 0.0,  # Not used in single-loop
-                        'current': float(match.group(5)),
-                        'balance_status': 'OK',  # Assume OK if data is coming
-                        'logging': match.group(9),
-                        'control_mode': match.group(8)
+                        'position': float(match.group(4)),
+                        'velocity_setpoint': float(match.group(5)),
+                        'velocity_actual': float(match.group(6)),
+                        'current': float(match.group(7)),
+                        'balance_status': match.group(8),
+                        'logging': match.group(9)
                     }
-                    mode_str = match.group(8)
-                    # Extract setpoint from data stream (Setpt: value)
-                    setpoint_from_stream = float(match.group(6))
-                    # Update tuning values with setpoint from stream
-                    tuning_updates['angle_setpoint'] = setpoint_from_stream
-                    # Extract drive offset if present
-                    if match.group(7) is not None:
-                        tuning_updates['drive_offset'] = float(match.group(7))
+                    tuning_updates['velocity_setpoint'] = float(match.group(5))
+                else:
+                    # Try new single-loop format with motor currents
+                    match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),YawErr:([-\d.]+),RollOut:([-\d.]+),YawOut:([^,]+),Left:([-\d.]+),Right:([-\d.]+),Setpt:([-\d.]+),Drive:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)', line)
+                    if match:
+                        yaw_out_str = match.group(7)
+                        try:
+                            yaw_out = float(yaw_out_str) if 'nan' not in yaw_out_str.lower() else 0.0
+                        except (ValueError, TypeError):
+                            yaw_out = 0.0
+                        imu_update = {
+                            'roll': float(match.group(1)),
+                            'pitch': float(match.group(2)),
+                            'yaw': float(match.group(3)),
+                            'position': 0.0,
+                            'velocity_setpoint': 0.0,
+                            'velocity_actual': 0.0,
+                            'current': float(match.group(6)),
+                            'roll_pid_output': float(match.group(6)),
+                            'yaw_pid_output': yaw_out,
+                            'left_motor_current': float(match.group(8)),
+                            'right_motor_current': float(match.group(9)),
+                            'balance_status': 'OK',
+                            'logging': match.group(14),
+                            'control_mode': match.group(12)
+                        }
+                        mode_str = match.group(12)
+                        setpoint_from_stream = float(match.group(10))
+                        tuning_updates['angle_setpoint'] = setpoint_from_stream
+                        tuning_updates['drive_offset'] = float(match.group(11))
+                        tuning_updates['yaw_control_enabled'] = (match.group(13) == "ON")
+                    else:
+                        # Fallback: format without yaw info
+                        match = re.search(r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),Err:([-\d.]+),Curr:([-\d.]+),Setpt:([-\d.]+)(?:,Drive:([-\d.]+))?,Mode:(\w+),Log:(\w+)', line)
+                        if match:
+                            imu_update = {
+                                'roll': float(match.group(1)),
+                                'pitch': float(match.group(2)),
+                                'yaw': float(match.group(3)),
+                                'position': 0.0,
+                                'velocity_setpoint': 0.0,
+                                'velocity_actual': 0.0,
+                                'current': float(match.group(5)),
+                                'balance_status': 'OK',
+                                'logging': match.group(9),
+                                'control_mode': match.group(8)
+                            }
+                            mode_str = match.group(8)
+                            setpoint_from_stream = float(match.group(6))
+                            tuning_updates['angle_setpoint'] = setpoint_from_stream
+                            if match.group(7) is not None:
+                                tuning_updates['drive_offset'] = float(match.group(7))
         
         # Now update data structures with minimal lock time
         if imu_update:
@@ -843,6 +853,8 @@ class SerialReader:
             # Other specific patterns
             (r'Max Current:\s+([\d.]+)A', 'max_current'),
             (r'Max Current\s*=\s*([\d.]+)A', 'max_current'),
+            (r'Angle Filter Alpha\s*=\s*([\d.]+)', 'angle_filter_alpha'),
+            (r'Angle Filter Alpha:\s+([\d.]+)', 'angle_filter_alpha'),
             (r'Angle Setpoint:\s+([-\d.]+)', 'angle_setpoint'),
             (r'Base Angle Setpoint:\s+([-\d.]+)°', 'angle_setpoint'),
             (r'Angle Setpoint\s*=\s*([-\d.]+)°', 'angle_setpoint'),
@@ -852,6 +864,8 @@ class SerialReader:
             (r'Drive Offset\s*=\s*([-\d.]+)°', 'drive_offset'),
             (r'Yaw Setpoint:\s+([-\d.]+)°', 'yaw_setpoint'),
             (r'Yaw Control:\s+(\w+)', 'yaw_control_enabled'),  # Will parse "ENABLED" or "DISABLED"
+            (r'useVelocityLoop:\s+(\w+)', 'use_vel_loop'),     # "ON" or "OFF"
+            (r'Velocity loop\s+(\w+)', 'use_vel_loop'),        # "ENABLED" or "DISABLED" (after pressing v)
             # Legacy patterns for backward compatibility (deprecated - should not match if Roll/Yaw/Velocity labels are present)
             # Use negative lookbehind to prevent matching if Roll/Yaw/Velocity prefix exists
             # NOTE: Lookbehind must be fixed-width, so we use single space \s (not \s+)
@@ -885,6 +899,11 @@ class SerialReader:
                     # Parse "ENABLED" or "DISABLED" to boolean
                     tuning_updates[key] = (match.group(1).upper() == "ENABLED")
                     break  # Stop after first match
+                elif key == 'use_vel_loop':
+                    # Parse "ON"/"OFF" or "ENABLED"/"DISABLED" to boolean
+                    raw = match.group(1).upper()
+                    tuning_updates[key] = (raw == "ON" or raw == "ENABLED")
+                    break
                 else:
                     tuning_updates[key] = float(match.group(1))
                     break  # CRITICAL: Stop after first match to prevent multiple patterns from overwriting
@@ -930,7 +949,7 @@ class SerialReader:
                 # Map firmware keys to GUI tuning_values keys
                 key_map = {
                     'Kp': 'Kp',
-                    'Ki': 'Ki', 
+                    'Ki': 'Ki',
                     'Kd': 'Kd',
                     'Kp_vel': 'Kp_vel',
                     'Ki_vel': 'Ki_vel',
@@ -940,9 +959,11 @@ class SerialReader:
                     'Kd_yaw': 'Kd_yaw',
                     'setpoint': 'angle_setpoint',
                     'maxCurrent': 'max_current',
+                    'angleFilterAlpha': 'angle_filter_alpha',
                     'velSetpoint': 'velocity_setpoint',
                     'yawEnabled': 'yaw_control_enabled',
                     'fineAdjust': 'fine_adjust',
+                    'useVelLoop': 'use_vel_loop',
                     'leftMotorSign': 'left_motor_sign',
                     'rightMotorSign': 'right_motor_sign',
                     'leftVelSign': 'left_vel_sign',
@@ -954,6 +975,8 @@ class SerialReader:
                     try:
                         # Handle boolean values
                         if gui_key in ['yaw_control_enabled', 'fine_adjust']:
+                            sync_updates[gui_key] = (value == '1')
+                        elif gui_key == 'use_vel_loop':
                             sync_updates[gui_key] = (value == '1')
                         else:
                             sync_updates[gui_key] = float(value)
@@ -995,9 +1018,10 @@ class SerialReader:
 
 class RobotTuningGUI:
     """Main GUI application"""
-    def __init__(self, root):
+    def __init__(self, root, scale=1.0):
         self.root = root
         self.root.title("Robot Tuning GUI - Self-Balancing Robot")
+        self._ui_scale = scale
         
         # Determine font scale based on screen resolution and DPI
         self._setup_scaling()
@@ -1022,13 +1046,16 @@ class RobotTuningGUI:
         # We use font points which should scale with tk scaling, but we also
         # bump base sizes to be comfortable on large monitors
         
-        # Determine base font size: 11pt is readable on most displays
-        # On very high-res screens (even with scaling), go a bit larger
+        # Determine base font size from resolution, then apply user scale
         base_size = 11
         if screen_w >= 2560 or screen_h >= 1600:
             base_size = 12
         if screen_w >= 3200 or screen_h >= 2000:
             base_size = 13
+        
+        # Apply user-supplied scale factor (--scale flag or 1.0 default)
+        ui_scale = getattr(self, '_ui_scale', 1.0)
+        base_size = max(7, round(base_size * ui_scale))
         
         self.default_font = ("DejaVu Sans", base_size)
         self.large_font = ("DejaVu Sans", base_size + 6, "bold")
@@ -1050,7 +1077,7 @@ class RobotTuningGUI:
         # Store scale info for widgets that need manual sizing
         self.base_font_size = base_size
         
-        print(f"Display: {screen_w}x{screen_h}, tk_scaling={tk_scale:.2f}, font_base={base_size}pt, window={win_w}x{win_h}")
+        print(f"Display: {screen_w}x{screen_h}, tk_scaling={tk_scale:.2f}, ui_scale={ui_scale:.2f}x, font_base={base_size}pt, window={win_w}x{win_h}")
     
         # Set up log directory (in same directory as script)
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1151,12 +1178,34 @@ class RobotTuningGUI:
         # Plot (takes remaining space)
         self.setup_plot(left_frame)
         
-        # Right side: Tuning Parameters - scrollable for small screens
-        right_frame = ttk.LabelFrame(main_frame, text="Tuning Parameters", padding="10")
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=pad)
-        main_frame.columnconfigure(1, weight=1)  # Right side gets 1x space
-        
-        self.setup_tuning_controls(right_frame)
+        # Right side: Tuning Parameters - scrollable so controls are never cut off
+        right_outer = ttk.LabelFrame(main_frame, text="Tuning Parameters", padding="4")
+        right_outer.grid(row=0, column=1, sticky="nsew", padx=pad)
+        main_frame.columnconfigure(1, weight=1)
+
+        tuning_canvas = tk.Canvas(right_outer, highlightthickness=0)
+        tuning_scrollbar = ttk.Scrollbar(right_outer, orient="vertical", command=tuning_canvas.yview)
+        tuning_canvas.configure(yscrollcommand=tuning_scrollbar.set)
+        tuning_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tuning_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tuning_inner = ttk.Frame(tuning_canvas)
+        tuning_win_id = tuning_canvas.create_window((0, 0), window=tuning_inner, anchor="nw")
+
+        def _on_tuning_resize(event):
+            tuning_canvas.configure(scrollregion=tuning_canvas.bbox("all"))
+        tuning_inner.bind("<Configure>", _on_tuning_resize)
+
+        def _on_canvas_resize(event):
+            tuning_canvas.itemconfig(tuning_win_id, width=event.width)
+        tuning_canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Mouse-wheel scroll: Button-4/5 for Linux, MouseWheel for Windows/macOS
+        tuning_canvas.bind("<Button-4>", lambda e: tuning_canvas.yview_scroll(-1, "units"))
+        tuning_canvas.bind("<Button-5>", lambda e: tuning_canvas.yview_scroll(1, "units"))
+        tuning_canvas.bind("<MouseWheel>", lambda e: tuning_canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        self.setup_tuning_controls(tuning_inner)
         
         # Bottom toolbar: Action buttons
         action_frame = ttk.Frame(self.root, padding=str(pad))
@@ -1165,7 +1214,6 @@ class RobotTuningGUI:
         for text, cmd, width in [
             ("Show All Values", self.show_tuning_values, 16),
             ("Sync Params", self.sync_params, 13),
-            ("Save Settings", lambda: self.serial_reader.send_command('k'), 14),
             ("Load Settings", lambda: self.serial_reader.send_command('g'), 14),
             ("Toggle Stream", lambda: self.serial_reader.send_command(' '), 14),
             ("Open Logs", self.open_log_folder, 12),
@@ -1173,6 +1221,13 @@ class RobotTuningGUI:
         ]:
             tk.Button(action_frame, text=text, command=cmd, width=width,
                       font=self.button_font, padx=6, pady=4).pack(side=tk.LEFT, padx=pad)
+
+        tk.Button(action_frame, text="💾 Save Settings (k)", width=18,
+                  command=lambda: self.serial_reader.send_command('k'),
+                  font=self.button_font, padx=6, pady=4,
+                  background="#27ae60", foreground="white",
+                  activebackground="#1e8449", activeforeground="white"
+                  ).pack(side=tk.LEFT, padx=pad)
     
     def setup_plot(self, parent):
         """Setup matplotlib plot with DPI-aware sizing"""
@@ -1211,6 +1266,7 @@ class RobotTuningGUI:
         self.create_param_control(pid_frame, "Ki", 'i', 'I', 'Ki', 0.05)
         # Note: 'd' toggles diagnostic mode, 'j' decreases Kd, 'D' increases Kd
         self.create_param_control(pid_frame, "Kd", 'j', 'D', 'Kd', 0.05)
+        self.create_param_control(pid_frame, "Filter Alpha", 'a', 'A', 'angle_filter_alpha', 0.05)
         
         fine_frame = ttk.Frame(pid_frame)
         fine_frame.pack(fill=tk.X, pady=3)
@@ -1258,6 +1314,8 @@ class RobotTuningGUI:
         vel_loop_frame = ttk.Frame(velocity_frame)
         vel_loop_frame.pack(fill=tk.X, pady=3)
         ttk.Label(vel_loop_frame, text="Velocity Loop:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
+        self.velocity_loop_status_label = ttk.Label(vel_loop_frame, text="OFF", font=self.medium_font, width=8, anchor=tk.CENTER)
+        self.velocity_loop_status_label.pack(side=tk.LEFT, padx=6)
         tk.Button(
             vel_loop_frame,
             text="Toggle (v)",
@@ -1300,13 +1358,13 @@ class RobotTuningGUI:
     def create_param_control(self, parent, label, dec_cmd, inc_cmd, param_key, step):
         """Create a parameter control row with larger, more readable controls"""
         frame = ttk.Frame(parent)
-        frame.pack(fill=tk.X, pady=4)
+        frame.pack(fill=tk.X, pady=2)
         
         # Label
         ttk.Label(frame, text=f"{label}:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
         
-        # Value display (larger, bold)
-        value_label = ttk.Label(frame, text="--", font=self.large_font, width=10, anchor=tk.CENTER)
+        # Value display — medium font keeps rows compact while still readable
+        value_label = ttk.Label(frame, text="--", font=self.medium_font, width=10, anchor=tk.CENTER)
         value_label.pack(side=tk.LEFT, padx=6)
         self.param_labels[param_key] = value_label
         
@@ -1471,6 +1529,7 @@ Angle PID (Balance):
   p/P - Decrease/Increase Kp
   i/I - Decrease/Increase Ki
   j/D - Decrease/Increase Kd (NOTE: 'd' toggles diagnostic mode)
+  a/A - Decrease/Increase Filter Alpha (0=max smooth, 1=no filter)
 
 Velocity Control (Phase 1 Cascaded):
   v - Toggle Velocity Loop ON/OFF
@@ -1562,7 +1621,7 @@ GUI Features:
             else:
                 error_color = "red"
             self.setpoint_info_label.config(
-                text=f"{active_setpoint:.1f}° (err: {error:+.2f}°)", 
+                text=f"{active_setpoint:.2f}° (err: {error:+.2f}°)", 
                 font=self.medium_font,
                 foreground=error_color
             )
@@ -1620,12 +1679,12 @@ GUI Features:
             # Note: Kd_vel is always 0 (PI only controller) - display as fixed value
             if key == 'Kd_vel':
                 formatted = "0.00 (PI only)"  # Always 0, show as fixed
-            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kd', 'Kp_yaw', 'Ki_yaw', 'Kd_yaw']:
+            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kd', 'Kp_yaw', 'Ki_yaw', 'Kd_yaw', 'angle_filter_alpha']:
                 formatted = f"{value:.2f}"
             elif key in ['max_current', 'min_current']:
                 formatted = f"{value:.1f}A"
             elif key in ['angle_setpoint', 'drive_offset']:
-                formatted = f"{value:.1f}°"
+                formatted = f"{value:.2f}°"
             elif key == 'deadband':
                 formatted = f"{value:.2f}°"
             else:
@@ -1660,6 +1719,13 @@ GUI Features:
             yaw_text = "ENABLED" if yaw_enabled else "DISABLED"
             yaw_color = "green" if yaw_enabled else "red"
             self.yaw_control_label.config(text=yaw_text, foreground=yaw_color)
+        
+        # Update velocity loop status (ON/OFF)
+        if hasattr(self, 'velocity_loop_status_label'):
+            use_vel_loop = tuning.get('use_vel_loop', False)
+            vel_loop_text = "ON" if use_vel_loop else "OFF"
+            vel_loop_color = "green" if use_vel_loop else "gray"
+            self.velocity_loop_status_label.config(text=vel_loop_text, foreground=vel_loop_color)
         
         # Sync fine adjust checkbox with firmware state
         if hasattr(self, 'fine_adjust_enabled'):
@@ -1790,18 +1856,31 @@ def detect_scale_factor(root):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Robot Tuning GUI - Self-Balancing Robot')
+    parser.add_argument(
+        '--scale', type=float, default=None,
+        help='UI scale factor for font/widget sizes (e.g. 0.75 smaller, 1.5 larger). '
+             'Default: auto-detect via HiDPI detection. '
+             'Try 0.75 if GUI is too large on Linux, 1.5 if too small on Windows.'
+    )
+    args = parser.parse_args()
+
     root = tk.Tk()
-    
-    # Detect HiDPI scaling before building the GUI
-    scale = detect_scale_factor(root)
-    if scale > 1.2:
-        # Tell tkinter to scale its internal rendering
-        # This affects widget sizes, padding, etc.
-        current_scaling = root.tk.call('tk', 'scaling')
-        root.tk.call('tk', 'scaling', current_scaling * scale)
-        print(f"HiDPI detected: scale={scale:.1f}x, tk scaling={current_scaling:.1f} -> {current_scaling * scale:.1f}")
-    
-    app = RobotTuningGUI(root)
+
+    ui_scale = 1.0
+    if args.scale is not None:
+        ui_scale = args.scale
+        print(f"UI scale override: {ui_scale:.2f}x (--scale flag)")
+    else:
+        # Auto-detect HiDPI and apply to tk's internal scaling
+        scale = detect_scale_factor(root)
+        if scale > 1.2:
+            current_scaling = root.tk.call('tk', 'scaling')
+            root.tk.call('tk', 'scaling', current_scaling * scale)
+            print(f"HiDPI detected: scale={scale:.1f}x, tk scaling={current_scaling:.1f} -> {current_scaling * scale:.1f}")
+
+    app = RobotTuningGUI(root, scale=ui_scale)
     
     # Ensure proper cleanup on window close
     def on_closing():

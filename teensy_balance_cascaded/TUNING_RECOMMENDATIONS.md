@@ -111,6 +111,30 @@ Max current:  5.0 A
 
 ---
 
+## 6b. A/B isolation strategy (single-loop parity)
+
+If cascaded behaves much worse than single-loop even with velocity and yaw off, isolate algorithm differences first.
+
+1. **Run single-loop baseline** and log 20-40 s (same surface, battery level, and setpoint/current values).
+2. **Run cascaded in parity mode**:
+   - `useVelocityLoop = OFF`
+   - `yawControlEnabled = OFF`
+   - same angle gains/setpoint/max current as the single-loop baseline
+   - parity path enabled in firmware (`SINGLE_LOOP_PARITY_WHEN_VEL_OFF = true`)
+3. **Compare only these metrics** with `log_evaluator.py`:
+   - Roll std, Error std
+   - saturation percentage at `|RollOut| >= maxCurrent`
+   - safety trips / recovery behavior
+4. **If parity matches single-loop**: re-enable cascaded features one-by-one in this order:
+   - stiction jump path
+   - 67 Hz motor-write rate limit
+   - velocity loop (still zero setpoint first)
+5. **If parity still fails**: treat as inner-loop issue and hold velocity/yaw off until inner-loop stats match single-loop.
+
+This keeps each test focused and avoids mixing multiple causes in one run.
+
+---
+
 ## Deadband thrashing (fixed)
 
 When velocity setpoint is 0 and measured velocity is small, we want the velocity PID to *not* drive the robot (angle-from-velocity = 0). The wrong approach is to call `SetMode(MANUAL)` and then `SetMode(AUTOMATIC)` every 20 ms depending on whether we're in deadband — that **thrashes** the PID (integral resets, mode toggling).
