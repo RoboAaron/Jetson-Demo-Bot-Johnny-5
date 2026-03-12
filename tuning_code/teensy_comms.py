@@ -569,10 +569,11 @@ class TeensyComms:
             return
 
         # --- Phase-1 cascaded (velocity control active) ---
+        # New format with RawVel: Vel:...,RawVel:...,VelSet:...
         m = re.search(
             r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),'
             r'Err:([-\d.]+),YawErr:([-\d.]+),'
-            r'Vel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),'
+            r'Vel:([-\d.]+),RawVel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),'
             r'RollOut:([-\d.]+),YawOut:([-\d.]+),'
             r'Left:([-\d.]+),Right:([-\d.]+),'
             r'Setpt:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)',
@@ -583,20 +584,51 @@ class TeensyComms:
                 'roll': float(m.group(1)), 'pitch': float(m.group(2)),
                 'yaw': float(m.group(3)), 'position': 0.0,
                 'velocity_actual': float(m.group(6)),
-                'velocity_setpoint': float(m.group(7)),
-                'current': float(m.group(9)),
-                'roll_pid_output': float(m.group(9)),
-                'yaw_pid_output': float(m.group(10)),
-                'left_motor_current': float(m.group(11)),
-                'right_motor_current': float(m.group(12)),
+                'velocity_raw': float(m.group(7)),
+                'velocity_setpoint': float(m.group(8)),
+                'current': float(m.group(10)),
+                'roll_pid_output': float(m.group(10)),
+                'yaw_pid_output': float(m.group(11)),
+                'left_motor_current': float(m.group(12)),
+                'right_motor_current': float(m.group(13)),
                 'balance_status': 'OK',
-                'logging': m.group(16),
+                'logging': m.group(17),
             }
-            mode_str = m.group(14)
-            tuning_updates['angle_setpoint'] = float(m.group(13))
-            tuning_updates['velocity_setpoint'] = float(m.group(7))
-            tuning_updates['velocity_pid_output'] = float(m.group(8))
-            tuning_updates['yaw_control_enabled'] = (m.group(15) == "ON")
+            mode_str = m.group(15)
+            tuning_updates['angle_setpoint'] = float(m.group(14))
+            tuning_updates['velocity_setpoint'] = float(m.group(8))
+            tuning_updates['velocity_pid_output'] = float(m.group(9))
+            tuning_updates['yaw_control_enabled'] = (m.group(16) == "ON")
+        if not m:
+            # Old cascaded format (no RawVel)
+            m = re.search(
+                r'R:([-\d.]+),P:([-\d.]+),Y:([-\d.]+),'
+                r'Err:([-\d.]+),YawErr:([-\d.]+),'
+                r'Vel:([-\d.]+),VelSet:([-\d.]+),VelPID:([-\d.]+),'
+                r'RollOut:([-\d.]+),YawOut:([-\d.]+),'
+                r'Left:([-\d.]+),Right:([-\d.]+),'
+                r'Setpt:([-\d.]+),Mode:(\w+),Yaw:(\w+),Log:(\w+)',
+                line
+            )
+            if m:
+                imu_update = {
+                    'roll': float(m.group(1)), 'pitch': float(m.group(2)),
+                    'yaw': float(m.group(3)), 'position': 0.0,
+                    'velocity_actual': float(m.group(6)),
+                    'velocity_setpoint': float(m.group(7)),
+                    'current': float(m.group(9)),
+                    'roll_pid_output': float(m.group(9)),
+                    'yaw_pid_output': float(m.group(10)),
+                    'left_motor_current': float(m.group(11)),
+                    'right_motor_current': float(m.group(12)),
+                    'balance_status': 'OK',
+                    'logging': m.group(16),
+                }
+                mode_str = m.group(14)
+                tuning_updates['angle_setpoint'] = float(m.group(13))
+                tuning_updates['velocity_setpoint'] = float(m.group(7))
+                tuning_updates['velocity_pid_output'] = float(m.group(8))
+                tuning_updates['yaw_control_enabled'] = (m.group(15) == "ON")
 
         if not m:
             # --- Old cascaded ---

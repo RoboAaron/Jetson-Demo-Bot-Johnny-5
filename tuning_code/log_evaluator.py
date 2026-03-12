@@ -28,6 +28,10 @@ def parse_data_line(line: str, timestamp_sec: float | None = None) -> dict | Non
         return None
     vel_m = re.search(r"Vel:([-\d.]+)", line)
     vel = float(vel_m.group(1)) if vel_m else None
+    raw_vel_m = re.search(r"RawVel:([-\d.]+)", line)
+    raw_vel = float(raw_vel_m.group(1)) if raw_vel_m else None
+    vel_set_m = re.search(r"VelSet:([-\d.]+)", line)
+    vel_setpt = float(vel_set_m.group(1)) if vel_set_m else None
     try:
         row = {
             "roll": float(m.group(1)),
@@ -37,6 +41,8 @@ def parse_data_line(line: str, timestamp_sec: float | None = None) -> dict | Non
             "right": float(m.group(5)),
             "setpt": float(m.group(6)),
             "vel": vel,
+            "raw_vel": raw_vel,
+            "vel_setpt": vel_setpt,
         }
         if timestamp_sec is not None:
             row["t"] = timestamp_sec
@@ -229,6 +235,29 @@ def main():
     else:
         print("\nClean rows: none (all excluded). Run with wheels powered and minimal manual input for tuning.")
 
+    # --- Raw vs filtered velocity (cascaded logs with RawVel) ---
+    vel_rows = [r for r in data_rows if r.get("raw_vel") is not None and r.get("vel") is not None]
+    if vel_rows:
+        vels = [r["vel"] for r in vel_rows]
+        raw_vels = [r["raw_vel"] for r in vel_rows]
+        print("\nVelocity (cascaded): Raw vs Filtered")
+        print(f"  Rows with Vel+RawVel: {len(vel_rows)}")
+        print(f"  Raw velocity (m/s):   mean={mean(raw_vels):.4f}  std={std(raw_vels):.4f}  min={min(raw_vels):.4f}  max={max(raw_vels):.4f}")
+        print(f"  Filtered (m/s):       mean={mean(vels):.4f}  std={std(vels):.4f}  min={min(vels):.4f}  max={max(vels):.4f}")
+        std_raw = std(raw_vels)
+        std_fil = std(vels)
+        if std_fil > 1e-9:
+            print(f"  Noise reduction:      std(raw)/std(filtered) = {std_raw / std_fil:.2f}x")
+        standstill = [r for r in vel_rows if r.get("vel_setpt") is not None and abs(r["vel_setpt"]) < 0.01]
+        if standstill:
+            v_s = [r["vel"] for r in standstill]
+            r_s = [r["raw_vel"] for r in standstill]
+            print(f"  At standstill (|VelSet|<0.01): {len(standstill)} rows")
+            print(f"    Raw:    mean={mean(r_s):.4f}  std={std(r_s):.4f}  (noise)")
+            print(f"    Filtered: mean={mean(v_s):.4f}  std={std(v_s):.4f}")
+            if std(r_s) > 0.1:
+                print("  -> Raw velocity noise at standstill is large; filtering is important for velocity loop.")
+
     print(f"\nVEL SIGN MISMATCH count: {vel_mismatches}")
     if vel_mismatches > 0:
         print("  -> Velocity loop is forcing avg to 0 when L and R have opposite signs. See TUNING_RECOMMENDATIONS.md (match RIGHT_VELOCITY_SIGN to VESC).")
@@ -242,6 +271,7 @@ def main():
         print(f"VESC (last):   Success={last[0]}  Rate={last[1]:.1f}%  Fail={last[2]}  {rate_str}")
     if i2c_stats or vesc_stats:
         print("  (I2C/VESC stats are cumulative from firmware start; may include time when VESCs were off or log was toggled.)")
+        print("  (Do not use VESC % as a reliability indicator—it reflects long periods with VESCs disabled.)")
 
     if syncs:
         s = syncs[-1]

@@ -4,13 +4,14 @@ Real-time monitoring and parameter adjustment GUI for the self-balancing robot.
 
 ## Prerequisites
 
-**IMPORTANT:** Before using this GUI, you must upload the robot firmware to your Teensy:
+**IMPORTANT:** Before using this GUI, you must upload the robot firmware to your Teensy.
 
-**Firmware File:** `teensy_balance_logging_i2c_optimized/teensy_balance_logging_i2c_optimized.ino`
+**Firmware (balance tuning):** `teensy_balance_cascaded/teensy_balance_cascaded.ino`  
+**Alternative (logging-optimized):** `teensy_balance_logging_i2c_optimized/teensy_balance_logging_i2c_optimized.ino`
 
 ### Upload Instructions:
 1. Open Arduino IDE
-2. Open the file: `teensy_balance_logging_i2c_optimized/teensy_balance_logging_i2c_optimized.ino`
+2. Open the firmware file (e.g. `teensy_balance_cascaded/teensy_balance_cascaded.ino`)
 3. Select **Tools → Board → Teensy 4.1**
 4. Select **Tools → USB Type → Serial**
 5. Click **Upload** (or press Ctrl+U)
@@ -41,6 +42,36 @@ On Ubuntu/Debian, you may need:
 sudo apt-get install python3-tk
 ```
 
+### Linux: Starting the GUI
+
+1. **Open a terminal** and go to the repo root:
+   ```bash
+   cd /path/to/Jetson-Demo-Bot-Johnny-5
+   ```
+
+2. **Install Python dependencies** (one-time):
+   ```bash
+   pip3 install -r tuning_code/requirements.txt
+   sudo apt-get install -y python3-tk
+   ```
+
+3. **Serial port access** (one-time, then log out and back in if you add yourself to `dialout`):
+   ```bash
+   # List ports: Teensy usually appears as /dev/ttyACM0
+   ls -la /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
+   # If you get "Permission denied" when connecting, add your user to dialout:
+   sudo usermod -aG dialout $USER
+   ```
+
+4. **Start the GUI** (either from repo root or from `tuning_code`):
+   ```bash
+   cd tuning_code && python3 robot_tuning_gui.py
+   ```
+   Or use the helper script (from repo root or from `tuning_code`):
+   ```bash
+   cd tuning_code && ./run_gui.sh
+   ```
+
 ## Usage
 
 ### Quick Start
@@ -50,26 +81,31 @@ cd tuning_code
 python3 robot_tuning_gui.py
 ```
 
-### Steps
+### What to do inside the GUI
 
-1. **Connect to Robot**:
-   - Select your Teensy device from the dropdown (auto-detected)
-   - Click "Connect"
-   - Status will show "Connected" in green when successful
+1. **Connect to the robot**
+   - Select the Teensy from the **Device** dropdown (e.g. `/dev/ttyACM0` on Linux). Click **Refresh** if the port is missing.
+   - Click **Connect**. Status should turn green (**Connected**).
 
-2. **Monitor Data**:
-   - IMU values (Roll, Pitch, Yaw) update in real-time
-   - Communication rates show IMU and VESC Hz and success %
-   - Real-time plot shows Roll, Pitch, and Current over time
+2. **Logging**
+   - Use **Toggle Log** to start/stop saving a timestamped log file. Logs are written to `tuning_code/logs/robot_log_YYYYMMDD_HHMMSS.txt`.
+   - **Open Logs** opens the logs folder. After a run, evaluate a log with:  
+     `python3 tuning_code/log_evaluator.py tuning_code/logs/robot_log_YYYYMMDD_HHMMSS.txt` (from repo root).
 
-3. **Adjust Parameters**:
-   - Use ▼/▲ buttons to decrease/increase parameters
-   - Changes are sent immediately to the robot
-   - Current values are displayed next to each parameter
+3. **Balance tuning (single-loop then velocity)**
+   - **Angle setpoint**: Use the **Angle Setpoint** ▼/▲ (or keys `z`/`Z`) to set target pitch (e.g. 0° for upright).
+   - **Angle PID**: Use ▼/▲ on Angle Kp, Ki, Kd (or `p`/`P`, `i`/`I`, `d`/`D`) to tune stand/floor balance. Follow `teensy_balance_cascaded/TUNING_RECOMMENDATIONS.md`.
+   - **Max Current**: ▼/▲ (or `m`/`M`) to limit motor current.
+   - **Velocity loop** (after angle loop is stable): Click **Toggle (v)** (or press `v`) to enable. Use **Vel Setpoint** ▼/▲ (or `6`/`V`) to change target velocity; **Stop (0)** sets velocity to 0.
+   - **Velocity PID**: Vel Kp / Vel Ki ▼/▲ (or `w`/`W`, `e`/`E`) when tuning the velocity loop.
 
-4. **View All Values**:
-   - Click "Show All Tuning Values" to request full parameter list from robot
-   - Robot will print all current tuning values to serial
+4. **Save to robot**
+   - Press **k** (keyboard) to save current tuning to EEPROM so it persists across power cycles. (No GUI button; use keyboard.)
+
+5. **Other**
+   - **Show All Tuning Values** (or `x`): request full parameter list from the robot (printed to serial / GUI).
+   - **Help**: show keyboard shortcuts.
+   - Use the real-time plot and status to confirm data and behavior while tuning.
 
 ## GUI Layout
 

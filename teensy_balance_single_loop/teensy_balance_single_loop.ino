@@ -51,10 +51,14 @@ double angleSetpoint = 0.0;  // Active setpoint = baseSetpoint + driveOffset
 double angleInput;           // Current roll angle (degrees)
 double motorCurrent;         // PID output: motor current (Amps)
 
-// PID Gains - Start conservative, tune up
-double Kp = 5.0;   // Proportional gain
-double Ki = 0.1;   // Integral gain (small to prevent windup)
-double Kd = 0.3;   // Derivative gain (damping)
+// PID Gains - tuned values
+double Kp = 2.0;   // Proportional gain
+double Ki = 0.0;   // Integral gain (0 = disabled, prevents windup limit cycle)
+double Kd = 0.04;  // Derivative gain (damping)
+
+// Angle input low-pass filter coefficient (0.0=max smooth, 1.0=no filter)
+// Alpha=0.3 gives ~24 Hz cutoff at 500 Hz loop rate
+float angleFilterAlpha = 0.3f;
 
 PID balancePID(&angleInput, &motorCurrent, &angleSetpoint, Kp, Ki, Kd, DIRECT);
 
@@ -75,8 +79,8 @@ PID yawPID(&yawInput, &yawOutput, &yawSetpoint, Kp_yaw, Ki_yaw, Kd_yaw, DIRECT);
 bool yawControlEnabled = false;  // DISABLED BY DEFAULT - was causing balance instability
 
 // Motor control parameters
-float maxCurrent = 6.0;  // Maximum motor current (Amps)
-float minCurrent = 0.3;  // Minimum current to overcome friction (Amps)
+float maxCurrent = 3.5;  // Maximum motor current (Amps)
+float minCurrent = 0.1;  // Minimum current to overcome friction (Amps)
 
 // Drive control limits (tilt offset in degrees)
 const float DRIVE_OFFSET_STEP = 0.1;
@@ -108,8 +112,9 @@ struct SavedSettings {
   float ki_yaw;
   float kd_yaw;
   bool yawControlEnabled;
+  float angleFilterAlpha;
 };
-const uint32_t SETTINGS_MAGIC = 0xB105E5A1;
+const uint32_t SETTINGS_MAGIC = 0xB105E5A4;  // Increment to invalidate old EEPROM on reflash
 
 bool loadSettings();
 void saveSettings();
@@ -121,10 +126,13 @@ enum ControlMode {
 };
 ControlMode controlMode = MODE_PID;
 
-// Motor direction configuration
-// DETERMINE ONCE: When robot tilts forward (positive roll), should wheels spin forward (positive current)?
-// If robot moves wrong direction, change MOTOR_DIRECTION_SIGN
-const float MOTOR_DIRECTION_SIGN = 1.0;  // -1.0 if motors need to be inverted, 1.0 if correct
+// Motor direction configuration (match cascaded balance code)
+// Per-motor signs compensate for VESC inversion or wiring so both wheels spin same direction for balance.
+// - If left motor spins backward with positive current: LEFT_MOTOR_DIRECTION_SIGN = -1.0
+// - If right motor spins backward with positive current: RIGHT_MOTOR_DIRECTION_SIGN = -1.0
+// Right motor inverted so both wheels spin same direction (per hardware/VESC config).
+const float LEFT_MOTOR_DIRECTION_SIGN = 1.0;   // -1.0 if left motor is inverted, 1.0 if normal
+const float RIGHT_MOTOR_DIRECTION_SIGN = -1.0; // -1.0: right motor inverted (wheels were opposite; fix for balance)
 
 // I2C Configuration
 const uint32_t I2C_CLOCK_SPEED = 400000;  // 400kHz Fast Mode
@@ -236,7 +244,8 @@ void setup() {
   if (loadSettings()) {
     Serial.println("💾 Loaded saved settings from EEPROM");
   } else {
-    Serial.println("💾 No saved settings found (using defaults)");
+    Serial.println("💾 No saved settings — writing defaults to EEPROM");
+    saveSettings();
   }
   angleSetpoint = baseSetpoint + driveOffset;
   balancePID.SetTunings(Kp, Ki, Kd);
@@ -294,20 +303,24 @@ void setup() {
   Serial.println("z/Z - Decrease/Increase Angle Setpoint");
   Serial.println("m/M - Decrease/Increase Max Current");
   Serial.println("x - Show current tuning values");
-  Serial.println("V - Save tuning values to EEPROM");
-  Serial.println("v - Load tuning values from EEPROM");
+  Serial.println("k - Save tuning values to EEPROM (Python GUI compatible)");
+  Serial.println("g - Load tuning values from EEPROM (Python GUI compatible)");
   Serial.println("t - Toggle fine adjust (smaller step sizes)");
   Serial.println();
   Serial.println("=== DRIVE COMMANDS ===");
   Serial.println("f - Drive forward (increase tilt)");
-  Serial.println("b - Drive backward (decrease tilt)");
+  Serial.println("B - Drive backward (decrease tilt); b = Download log (GUI)");
   Serial.println("0 - Stop drive (clear tilt offset)");
   Serial.println();
   Serial.println("=== LOGGING COMMANDS ===");
   Serial.println("l - Start logging");
   Serial.println("s - Stop logging");
-  Serial.println("w - Download logged data");
+  Serial.println("b - Download logged data (Python GUI compatible)");
   Serial.println("SPACE - Pause/Resume data stream");
+  Serial.println();
+  Serial.println("=== PYTHON TOOL / SYNC ===");
+  Serial.println("@ - Send SYNC line (GUI Sync Params)");
+  Serial.println("(v/V/6/0/w/e = no-op in single-loop; velocity loop N/A)");
   Serial.println();
   Serial.println("Ready!");
 }
@@ -439,9 +452,18 @@ void loop() {
       // Update active setpoint (base + drive offset)
       angleSetpoint = baseSetpoint + driveOffset;
 
-      // Set PID input to current roll angle
-      // Note: Roll is already corrected for IMU mounting orientation
-      angleInput = roll;
+      // Low-pass filter on angle input to suppress derivative noise.
+      // Without filtering: kd_effective = Kd / dt = 0.04 / 0.002 = 20.
+      // A 0.05° noise jitter per sample produces 20 × 0.05 = 1.0 A of spurious output.
+      // Alpha=0.3 gives ~24 Hz cutoff at 500 Hz, preserving balance bandwidth.
+      static float angleFiltered = 0.0f;
+      static bool filterInitialized = false;
+      if (!filterInitialized) {
+        angleFiltered = (float)roll;
+        filterInitialized = true;
+      }
+      angleFiltered = angleFilterAlpha * (float)roll + (1.0f - angleFilterAlpha) * angleFiltered;
+      angleInput = angleFiltered;
       
       outputCurrent = 0.0;
       
@@ -449,7 +471,7 @@ void loop() {
         // DIAGNOSTIC MODE: Direct angle → current mapping (no PID)
         // This verifies basic causality: tilt forward → wheels forward
         float angleError = roll - angleSetpoint;
-        
+
         // Add small deadzone so robot stops when upright (within 0.2°)
         if (abs(angleError) < 0.2) {
           outputCurrent = 0.0;  // Stop when upright
@@ -461,15 +483,15 @@ void loop() {
         // PID MODE: Normal control
         balancePID.Compute();  // Computes motorCurrent
         outputCurrent = motorCurrent;
-        
+
         // Apply minimum current threshold (dead zone for friction)
         if (abs(outputCurrent) < minCurrent) {
           outputCurrent = 0.0;
         }
       }
-      
+
       // Apply motor direction sign (determined once during hardware setup)
-      outputCurrent *= MOTOR_DIRECTION_SIGN;
+      outputCurrent *= 1.0;
       
       // YAW CONTROL: Compute yaw correction to prevent unwanted rotation
       
@@ -508,6 +530,10 @@ void loop() {
         leftMotorCurrent = -outputCurrent;
         rightMotorCurrent = outputCurrent;
       }
+      
+      // Apply per-motor direction signs (for VESC inversion or wiring - match cascaded code)
+      leftMotorCurrent *= LEFT_MOTOR_DIRECTION_SIGN;
+      rightMotorCurrent *= RIGHT_MOTOR_DIRECTION_SIGN;
       
       // Send to motors
       vescLeft.setCurrent(leftMotorCurrent);
@@ -581,9 +607,20 @@ void handleCommand(char cmd) {
       stopLogging();
       break;
       
+    case 'b':
+      downloadLogData();
+      break;
+    case 'B':
+      driveOffset -= DRIVE_OFFSET_STEP;
+      if (driveOffset < -DRIVE_OFFSET_MAX) driveOffset = -DRIVE_OFFSET_MAX;
+      Serial.printf("Drive Offset = %.2f° (backward)\n", driveOffset);
+      break;
+      
     case 'w':
     case 'W':
-      downloadLogData();
+    case 'e':
+    case 'E':
+      Serial.println("Single-loop: velocity PID N/A");
       break;
       
     case 'c':
@@ -652,7 +689,20 @@ void handleCommand(char cmd) {
       balancePID.SetTunings(Kp, Ki, Kd);
       Serial.printf("Roll Kd = %.2f (increased)\n", Kd);
       break;
-    
+
+    // ANGLE FILTER tuning (low-pass coefficient)
+    case 'a':
+      angleFilterAlpha -= (fineAdjust ? 0.01f : 0.05f);
+      if (angleFilterAlpha < 0.0f) angleFilterAlpha = 0.0f;
+      Serial.printf("Angle Filter Alpha = %.2f (decreased, more smoothing)\n", angleFilterAlpha);
+      break;
+
+    case 'A':
+      angleFilterAlpha += (fineAdjust ? 0.01f : 0.05f);
+      if (angleFilterAlpha > 1.0f) angleFilterAlpha = 1.0f;
+      Serial.printf("Angle Filter Alpha = %.2f (increased, less smoothing)\n", angleFilterAlpha);
+      break;
+
     // ANGLE SETPOINT tuning
     case 'z':
       baseSetpoint -= (fineAdjust ? SETPOINT_STEP_FINE : SETPOINT_STEP_COARSE);
@@ -687,16 +737,42 @@ void handleCommand(char cmd) {
       Serial.printf("Drive Offset = %.2f° (forward)\n", driveOffset);
       break;
       
-    case 'b':
-    case 'B':
-      driveOffset -= DRIVE_OFFSET_STEP;
-      if (driveOffset < -DRIVE_OFFSET_MAX) driveOffset = -DRIVE_OFFSET_MAX;
-      Serial.printf("Drive Offset = %.2f° (backward)\n", driveOffset);
-      break;
-      
     case '0':
       driveOffset = 0.0;
       Serial.println("Drive Offset = 0.00° (stop)");
+      break;
+    
+    // Velocity loop / setpoint (cascaded GUI): no-op in single-loop
+    case '6':
+      Serial.println("Single-loop: velocity setpoint N/A");
+      break;
+    
+    case 'v':
+      Serial.println("Single-loop: velocity loop N/A");
+      break;
+      
+    case 'V':
+      Serial.println("Single-loop: velocity setpoint N/A");
+      break;
+    
+    // Save/Load (match Python tool / cascaded: k=save, g=load)
+    case 'k':
+    case 'K':
+      saveSettings();
+      Serial.println("✅ Settings saved to EEPROM (k)");
+      break;
+      
+    case 'g':
+    case 'G':
+      if (loadSettings()) {
+        balancePID.SetTunings(Kp, Ki, Kd);
+        balancePID.SetOutputLimits(-maxCurrent, maxCurrent);
+        yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
+        yawPID.SetOutputLimits(-maxCurrent, maxCurrent);
+        Serial.println("✅ Settings loaded from EEPROM (g)");
+      } else {
+        Serial.println("⚠️  No saved settings found");
+      }
       break;
     
     // I2C speed reduction (if seeing failures)
@@ -716,24 +792,6 @@ void handleCommand(char cmd) {
       }
       break;
 
-    // SAVE/LOAD SETTINGS
-    case 'V':
-      saveSettings();
-      Serial.println("✅ Settings saved to EEPROM");
-      break;
-      
-    case 'v':
-      if (loadSettings()) {
-        balancePID.SetTunings(Kp, Ki, Kd);
-        balancePID.SetOutputLimits(-maxCurrent, maxCurrent);
-        yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-        yawPID.SetOutputLimits(-maxCurrent, maxCurrent);
-        Serial.println("✅ Settings loaded from EEPROM");
-      } else {
-        Serial.println("⚠️  No saved settings found");
-      }
-      break;
-    
     case 't':
     case 'T':
       fineAdjust = !fineAdjust;
@@ -822,10 +880,16 @@ void handleCommand(char cmd) {
       Serial.printf("Yaw Setpoint reset to current yaw: %.2f°\n", yawSetpoint);
       break;
     
+    // SYNC: machine-readable dump for Python tool (GUI sync)
+    case '@':
+      sendSyncData();
+      break;
+    
     // Show current settings
     case 'x':
     case 'X':
       printTuningValues();
+      sendSyncData();
       Serial.println("CURRENT STATE:");
       Serial.printf("  Roll: %.2f° (target: %.1f°, error: %.2f°)\n", roll, angleSetpoint, roll - angleSetpoint);
       Serial.printf("  Yaw: %.2f° (target: %.1f°, error: %.2f°)\n", yaw, yawSetpoint, yaw - yawSetpoint);
@@ -839,6 +903,18 @@ void handleCommand(char cmd) {
   }
 }
 
+// Send all tuning parameters in machine-readable format for GUI (Python tool) sync
+void sendSyncData() {
+  Serial.printf("SYNC:Kp=%.3f,Ki=%.3f,Kd=%.3f,Kp_vel=0,Ki_vel=0,Kd_vel=0,"
+                "Kp_yaw=%.3f,Ki_yaw=%.3f,Kd_yaw=%.3f,setpoint=%.3f,maxCurrent=%.2f,"
+                "angleFilterAlpha=%.3f,velSetpoint=0,yawEnabled=%d,fineAdjust=%d\n",
+                Kp, Ki, Kd,
+                Kp_yaw, Ki_yaw, Kd_yaw,
+                baseSetpoint, maxCurrent,
+                angleFilterAlpha,
+                yawControlEnabled ? 1 : 0, fineAdjust ? 1 : 0);
+}
+
 // Function to print all current tuning values
 void printTuningValues() {
   Serial.println("\n╔════════════════════════════════════════════════════╗");
@@ -846,6 +922,7 @@ void printTuningValues() {
   Serial.println("╚════════════════════════════════════════════════════╝");
   Serial.println("ROLL PID CONTROL (Balance):");
   Serial.printf("  Roll Kp: %.2f  Roll Ki: %.2f  Roll Kd: %.2f\n", Kp, Ki, Kd);
+  Serial.printf("  Angle Filter Alpha: %.2f (~%.0f Hz cutoff)\n", angleFilterAlpha, -logf(1.0f - angleFilterAlpha) / (2.0f * 3.14159f * 0.002f));
   Serial.printf("  Base Angle Setpoint: %.2f°\n", baseSetpoint);
   Serial.printf("  Drive Offset: %.2f°  Active Setpoint: %.2f°\n", driveOffset, angleSetpoint);
   Serial.println("YAW PID CONTROL (Rotation):");
@@ -853,7 +930,7 @@ void printTuningValues() {
   Serial.printf("  Yaw Setpoint: %.2f°  Yaw Control: %s\n", yawSetpoint, yawControlEnabled ? "ENABLED" : "DISABLED");
   Serial.println("MOTOR CONTROL:");
   Serial.printf("  Max Current: %.2fA  Min Current: %.2fA\n", maxCurrent, minCurrent);
-  Serial.printf("  Motor Direction Sign: %.1f\n", MOTOR_DIRECTION_SIGN);
+  Serial.printf("  Motor Direction Signs: Left=%.1f, Right=%.1f\n", LEFT_MOTOR_DIRECTION_SIGN, RIGHT_MOTOR_DIRECTION_SIGN);
   Serial.println("SYSTEM CONFIG:");
   Serial.printf("  I2C Clock: %d kHz  IMU Rate: %d Hz  PID Rate: %d Hz\n", 
                 I2C_CLOCK_SPEED / 1000, IMU_UPDATE_RATE_HZ, 1000 / PID_SAMPLE_TIME_MS);
@@ -945,7 +1022,7 @@ void downloadLogData() {
   Serial.println("MOTOR SETTINGS:");
   Serial.printf("  Max Current: %.1f A\n", maxCurrent);
   Serial.printf("  Min Current: %.1f A\n", minCurrent);
-  Serial.printf("  Motor Direction Sign: %.1f\n", MOTOR_DIRECTION_SIGN);
+  Serial.printf("  Motor Direction Signs: Left=%.1f, Right=%.1f\n", LEFT_MOTOR_DIRECTION_SIGN, RIGHT_MOTOR_DIRECTION_SIGN);
   Serial.println("SYSTEM INFO:");
   Serial.printf("  IMU Update Rate: %d Hz\n", IMU_UPDATE_RATE_HZ);
   Serial.printf("  I2C Clock: %d kHz\n", I2C_CLOCK_SPEED / 1000);
@@ -985,7 +1062,12 @@ bool loadSettings() {
   }
   
   yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-  
+
+  angleFilterAlpha = settings.angleFilterAlpha;
+  if (isnan(angleFilterAlpha) || isinf(angleFilterAlpha) || angleFilterAlpha < 0.0f || angleFilterAlpha > 1.0f) {
+    angleFilterAlpha = 0.3f;
+  }
+
   driveOffset = 0.0;  // Always start with no drive offset
   angleSetpoint = baseSetpoint + driveOffset;
   return true;
@@ -1004,6 +1086,7 @@ void saveSettings() {
   settings.ki_yaw = Ki_yaw;
   settings.kd_yaw = Kd_yaw;
   settings.yawControlEnabled = yawControlEnabled;
+  settings.angleFilterAlpha = angleFilterAlpha;
   EEPROM.put(0, settings);
 }
 
