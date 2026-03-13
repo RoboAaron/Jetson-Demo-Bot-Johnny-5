@@ -41,8 +41,15 @@ Use this sequence to avoid reintroducing multiple variables at once.
    - `useVelocityLoop = ON`, `VelSet = 0.0`.
    - Verify `angleSetpointFromVel` remains near 0 and no creep appears.
 5. **Tune velocity loop incrementally**
-   - Start with very small non-zero setpoints.
-   - Adjust `Kp_vel` then `Ki_vel` only after inner loop remains stable.
+   - Start with very small nonr output → label should switch to ENABLED/DISABLED.
+If any label doesn’t update, check serial and that you’re on the latest GUI.
+Kd steps
+
+Fine Adjust off: press j/D; Kd should change by 0.01 and show 3 decimals (e.g. 0.032 → 0.042).
+Fine Adjust on: press j/D; Kd should change by 0.002 (e.g. 0.034 → 0.036).
+Confirm the Fine Adjust checkbox stays in sync after pressing t.
+Optional parity check
+With velocity loop OFF, yaw OFF, mKi_vel` only after inner loop remains stable.
 6. **Only then re-enable yaw lock**
    - Keep yaw gains small and verify yaw correction does not disturb balance loop.
 
@@ -148,6 +155,20 @@ When roll swings widely (e.g. ±5° to ±20°) and motors hit ±maxCurrent repea
 3. **Base setpoint:** If you previously had stable balance near **-1.5° to -1.6°**, try that instead of a more upright setpoint (e.g. -0.7°). A setpoint far from the natural lean can force constant large corrections.
 4. **One setpoint per run:** Avoid changing setpoint mid-run when tuning; pick one (e.g. -1.5°) and run a short log, then evaluate.
 5. After oscillation is reduced, consider **smoothing stiction** (the ±0.55 A step at small error can cause small limit cycling); see BALANCE_CODE_REVIEW MAJOR-2.
+
+---
+
+## 5c. Chatter and saturation (e.g. robot_log_20260312_224925)
+
+If the robot feels “chatty” or the log shows a lot of motor activity:
+
+- **Saturation-dominated:** In that log, **~75% of rows had |RollOut| = 6.5 A** (motors pegged). Kp was already **2.0** for most of the run (stepped down from 4.5 during the session). When the loop is saturated, you get large swings: full current one way → overshoot → full current the other way. That feels like violent chatter.
+  - **Lower max current** (e.g. **4–5 A**) so the PID can work in a more linear range even with Kp=2.0.
+  - If you haven’t already, **reduce Kp** until saturation drops (e.g. 2.0 or lower); then add **Kd** for damping.
+- **True chatter (high-freq jitter at setpoint):** Once saturation is reduced, if you still see small rapid roll/current changes right at the balance point:
+  - **Increase angle smoothing:** decrease **angleFilterAlpha** (e.g. **0.10**) so the derivative sees less IMU noise.
+  - **Tweak Kd:** try **Kd = 0.04–0.05** for more damping; use Fine Adjust (0.002 steps) to dial in.
+- **One setpoint per run:** Tune at a single base setpoint (e.g. -0.7°) for a given test; avoid changing setpoint mid-run when judging chatter.
 
 ---
 
