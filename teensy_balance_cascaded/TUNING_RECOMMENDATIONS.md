@@ -48,6 +48,25 @@ Use this sequence to avoid reintroducing multiple variables at once.
 
 ---
 
+## What to test now (after latest firmware/GUI changes)
+
+Use this checklist after reflashing and before continuing the bring-up gameplan.
+
+1. **Reflash**
+   - Upload `teensy_balance_cascaded/teensy_balance_cascaded.ino` to the Teensy so the robot has: Kd coarse step 0.01 / fine 0.002, Motor Output toggle messages, and any recent fixes.
+
+2. **GUI toggles and status**
+   - Connect the tuning GUI. Use **Toggle (v)** (velocity loop), **Toggle (n)** (yaw), **Toggle (o)** (motor output). After each press, the corresponding status label (Velocity Loop / Yaw Control / Motor Output) should update **immediately** to ON/OFF or ENABLED/DISABLED. If a label does not update, re-check serial connection and that you are running the latest GUI.
+
+3. **Kd steps and display**
+   - With **Fine Adjust** unchecked: press j/D (decrease/increase Kd). Kd should step by **0.01** and the value should show **3 decimals** (e.g. 0.032, 0.042).
+   - Check **Fine Adjust** (or press `t`). Press j/D again. Kd should step by **0.002** (e.g. 0.034, 0.036). Uncheck Fine Adjust and confirm the checkbox state stays in sync with the robot after the next response.
+
+4. **Optional: parity baseline**
+   - With velocity loop OFF, yaw OFF, motor output ON: run a short balance (e.g. 30 s), capture a log, and run `log_evaluator.py`. Confirm behavior is still in line with the validated parity run (no new saturation or instability). Then continue from step 2 of the bring-up gameplan when ready.
+
+---
+
 ## Archived plans (historical reference)
 
 The sections below were useful during earlier debugging phases, but they are now **superseded** by the active bring-up gameplan above.

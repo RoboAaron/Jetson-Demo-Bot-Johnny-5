@@ -75,8 +75,8 @@ class SerialReader:
             'Kd_vel': 0.0,
             'Kp_position': 0.0,
             # Single-loop PID (for clean firmware)
-            'Kp': 5.0,
-            'Ki': 0.1,
+            'Kp': 2.0,
+            'Ki': 0.0,
             'Kd': 0.3,
             'angle_filter_alpha': 0.3,
             # Yaw PID (rotation control)
@@ -94,7 +94,8 @@ class SerialReader:
             # Velocity control (Phase 1)
             'velocity_setpoint': 0.0,  # Target velocity in m/s
             'use_vel_loop': False,   # Velocity loop ON/OFF (cascaded mode)
-            'motor_output_enabled': True  # Dry-run motor output state (o toggle)
+            'motor_output_enabled': True,  # Dry-run motor output state (o toggle)
+            'fine_adjust': False   # When True, Kd and other params use smaller steps (e.g. Kd step 0.002)
         }
         
         # Control direction state
@@ -476,6 +477,7 @@ class SerialReader:
             'n': 'Toggle Yaw Control', 'N': 'Toggle Yaw Control',
             # Other controls
             'd': 'Toggle Diagnostic Mode',
+            'o': 'Toggle Motor Output (dry-run)', 'O': 'Toggle Motor Output (dry-run)',
             't': 'Toggle Fine Adjust', 'T': 'Toggle Fine Adjust',
             'x': 'Show All Tuning Values', 'X': 'Show All Tuning Values',
             ' ': 'Toggle Data Stream',
@@ -869,6 +871,7 @@ class SerialReader:
             (r'Velocity loop\s+(\w+)', 'use_vel_loop'),        # "ENABLED" or "DISABLED" (after pressing v)
             (r'Motor Output:\s+(\w+)', 'motor_output_enabled'), # "ENABLED" or "DISABLED"
             (r'Motor output\s+(\w+)', 'motor_output_enabled'),  # "ENABLED" or "DISABLED" (after pressing o)
+            (r'Fine Adjust:\s+(\w+)', 'fine_adjust'),  # "ON" or "OFF" (after pressing t)
             # Legacy patterns for backward compatibility (deprecated - should not match if Roll/Yaw/Velocity labels are present)
             # Use negative lookbehind to prevent matching if Roll/Yaw/Velocity prefix exists
             # NOTE: Lookbehind must be fixed-width, so we use single space \s (not \s+)
@@ -912,6 +915,11 @@ class SerialReader:
                     raw = match.group(1).upper()
                     tuning_updates[key] = (raw == "ENABLED" or raw == "ON")
                     break
+                elif key == 'fine_adjust':
+                    # Parse "ON"/"OFF" (firmware prints "Fine Adjust: ON" or "OFF")
+                    raw = match.group(1).upper()
+                    tuning_updates[key] = (raw == "ON")
+                    break
                 else:
                     tuning_updates[key] = float(match.group(1))
                     break  # CRITICAL: Stop after first match to prevent multiple patterns from overwriting
@@ -934,6 +942,13 @@ class SerialReader:
                     self.tuning_values.update(tuning_updates)
                 if comm_updates:
                     self.comm_stats.update(comm_updates)
+            # Force immediate GUI refresh when toggle status is updated so labels stay in sync
+            toggle_keys = ('use_vel_loop', 'yaw_control_enabled', 'motor_output_enabled', 'fine_adjust')
+            if any(k in tuning_updates for k in toggle_keys) and getattr(self, 'gui', None):
+                try:
+                    self.gui.root.after(0, self.gui.update_display)
+                except Exception:
+                    pass
     
     def _parse_sync_data(self, line):
         """Parse SYNC line from firmware and update all tuning values
@@ -1281,7 +1296,7 @@ class RobotTuningGUI:
         ttk.Label(fine_frame, text="Fine Adjust:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
         ttk.Checkbutton(
             fine_frame,
-            text="Enable (smaller steps)",
+            text="Enable (Kd step 0.002)",
             variable=self.fine_adjust_enabled,
             command=self.toggle_fine_adjust
         ).pack(side=tk.LEFT, padx=3)
@@ -1416,12 +1431,11 @@ class RobotTuningGUI:
             # Note: Actual value will be updated from serial response
     
     def toggle_fine_adjust(self):
-        """Toggle fine adjustment mode in firmware"""
+        """Toggle fine adjustment mode in firmware; checkbox state is updated from firmware response."""
         if self.serial_reader.connected:
             self.serial_reader.send_command('t')
-            self.fine_adjust_state = not self.fine_adjust_state
-            status = "ON" if self.fine_adjust_state else "OFF"
-            self.show_status_message(f"Fine Adjust {status}", duration=1500, color="blue")
+            self.show_status_message("Fine Adjust toggled (wait for robot)", duration=1500, color="blue")
+            # Do not flip self.fine_adjust_state here; update_display will set it from "Fine Adjust: ON/OFF" parse
     
     def refresh_devices(self):
         """Refresh list of available devices"""
@@ -1545,7 +1559,7 @@ class RobotTuningGUI:
 Angle PID (Balance):
   p/P - Decrease/Increase Kp
   i/I - Decrease/Increase Ki
-  j/D - Decrease/Increase Kd (NOTE: 'd' toggles diagnostic mode)
+  j/D - Decrease/Increase Kd (step 0.002 when Fine Adjust ON; NOTE: 'd' = diagnostic mode)
   a/A - Decrease/Increase Filter Alpha (0=max smooth, 1=no filter)
 
 Velocity Control (Phase 1 Cascaded):
@@ -1565,7 +1579,7 @@ Yaw PID (Rotation):
 Motor Settings:
   m/M - Decrease/Increase Max Current
   z/Z - Decrease/Increase Angle Setpoint
-  t/T - Toggle fine adjust (smaller steps)
+  t/T - Toggle fine adjust (Kd step 0.002 when ON)
 
 Save/Load Settings:
   k/K - Save settings to EEPROM
@@ -1697,8 +1711,10 @@ GUI Features:
             # Note: Kd_vel is always 0 (PI only controller) - display as fixed value
             if key == 'Kd_vel':
                 formatted = "0.00 (PI only)"  # Always 0, show as fixed
-            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kd', 'Kp_yaw', 'Ki_yaw', 'Kd_yaw', 'angle_filter_alpha']:
+            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kp_yaw', 'Ki_yaw', 'angle_filter_alpha']:
                 formatted = f"{value:.2f}"
+            elif key in ['Kd', 'Kd_yaw']:
+                formatted = f"{value:.3f}"
             elif key in ['max_current', 'min_current']:
                 formatted = f"{value:.1f}A"
             elif key in ['angle_setpoint', 'drive_offset']:

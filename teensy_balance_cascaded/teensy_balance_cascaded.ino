@@ -90,7 +90,7 @@ double Kd = 0.03;   // Lower starting Kd: raw 500 Hz angle data made 0.3 saturat
 
 // Angle input low-pass filter for derivative-noise suppression.
 // Alpha = 0.3 gives roughly a 24 Hz cutoff at the 500 Hz angle PID rate.
-float angleFilterAlpha = 0.3f;
+float angleFilterAlpha = 0.15f;
 
 PID balancePID(&angleInput, &motorCurrent, &angleSetpoint, Kp, Ki, Kd, DIRECT);
 
@@ -130,7 +130,7 @@ const float DRIVE_ZERO_EPS = 0.01f;     // Treat commands below this as true zer
 
 // Single-loop parity mode for algorithm A/B isolation:
 // when velocity+yaw are OFF, emulate single-loop actuator behavior.
-const bool SINGLE_LOOP_PARITY_WHEN_VEL_OFF = true;
+const bool SINGLE_LOOP_PARITY_WHEN_VEL_OFF = false;
 const float PARITY_MIN_CURRENT = 0.1f;
 // True = do not read VESC feedback when velocity loop is OFF (clean angle-only A/B mode).
 const bool BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF = true;
@@ -143,8 +143,8 @@ const float KP_STEP_COARSE = 0.5;
 const float KP_STEP_FINE = 0.1;
 const float KI_STEP_COARSE = 0.05;
 const float KI_STEP_FINE = 0.01;
-const float KD_STEP_COARSE = 0.05;
-const float KD_STEP_FINE = 0.01;
+const float KD_STEP_COARSE = 0.01;   // Kd is sensitive at 500 Hz; coarse 0.01, fine 0.002
+const float KD_STEP_FINE = 0.002;
 const float SETPOINT_STEP_COARSE = 0.1;
 const float SETPOINT_STEP_FINE = 0.02;
 const float MAXCURRENT_STEP_COARSE = 0.5;
@@ -256,16 +256,19 @@ int logIndex = 0;
 bool bufferFull = false;
 bool logBufferFullNotified = false;
 
-// Stiction compensation helper function
+// Stiction compensation: smooth linear mapping to avoid limit-cycle at zero-crossing.
 // - If command is essentially zero (< DRIVE_ZERO_EPS), return 0 (true zero stays zero)
-// - If command is non-zero but below stiction threshold, jump to MIN_DRIVE_CURRENT
-// - Otherwise, pass through unchanged
+// - Otherwise map [0, maxCurrent] -> [MIN_DRIVE_CURRENT, maxCurrent] to avoid hard step
 float applyStictionComp(float cmdA) {
   if (fabs(cmdA) < DRIVE_ZERO_EPS) return 0.0f;
+
   float s = (cmdA > 0) ? 1.0f : -1.0f;
   float mag = fabs(cmdA);
-  if (mag < MIN_DRIVE_CURRENT) return s * MIN_DRIVE_CURRENT;
-  return cmdA;
+
+  // Smooth linear mapping: scale the range [0, maxCurrent] to [MIN_DRIVE_CURRENT, maxCurrent]
+  float mapped = MIN_DRIVE_CURRENT + (mag * (maxCurrent - MIN_DRIVE_CURRENT) / maxCurrent);
+
+  return s * mapped;
 }
 
 // Send current commands unless dry-run mode is active.
@@ -415,7 +418,7 @@ void setup() {
   
   Serial.printf("   ✅ Angle PID: %d Hz update rate\n", 1000 / PID_SAMPLE_TIME_MS);
   Serial.printf("   ✅ Velocity PID: %d Hz update rate\n", 1000 / VELOCITY_PID_SAMPLE_TIME_MS);
-  Serial.printf("   ✅ Angle Gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
+  Serial.printf("   ✅ Angle Gains: Kp=%.2f, Ki=%.2f, Kd=%.3f\n", Kp, Ki, Kd);
   Serial.printf("   ✅ Velocity Gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp_vel, Ki_vel, Kd_vel);
   Serial.printf("   ✅ Max Current: %.1fA\n", maxCurrent);
   Serial.println();
@@ -1035,9 +1038,9 @@ void handleCommand(char cmd) {
       motorOutputEnabled = !motorOutputEnabled;
       if (!motorOutputEnabled) {
         sendMotorCurrents(0.0f, 0.0f);
-        Serial.println("Motor output DISABLED (dry-run): no motor commands sent, commanded amps still logged");
+        Serial.println("Motor Output: DISABLED");
       } else {
-        Serial.println("Motor output ENABLED");
+        Serial.println("Motor Output: ENABLED");
       }
       break;
     
@@ -1090,13 +1093,13 @@ void handleCommand(char cmd) {
     case 'J':
       Kd -= (fineAdjust ? KD_STEP_FINE : KD_STEP_COARSE); if (Kd < 0) Kd = 0;
       balancePID.SetTunings(Kp, Ki, Kd);
-      Serial.printf("Angle Kd = %.2f (decreased)\n", Kd);
+      Serial.printf("Angle Kd = %.3f (decreased)\n", Kd);
       break;
       
     case 'D':
       Kd += (fineAdjust ? KD_STEP_FINE : KD_STEP_COARSE);
       balancePID.SetTunings(Kp, Ki, Kd);
-      Serial.printf("Angle Kd = %.2f (increased)\n", Kd);
+      Serial.printf("Angle Kd = %.3f (increased)\n", Kd);
       break;
 
     case 'a':
@@ -1220,7 +1223,7 @@ void handleCommand(char cmd) {
       if (isnan(Kp_yaw) || isinf(Kp_yaw)) Kp_yaw = 0.5;
       if (isnan(Ki_yaw) || isinf(Ki_yaw)) Ki_yaw = 0.0;
       yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-      Serial.printf("Yaw Kd = %.2f (decreased)\n", Kd_yaw);
+      Serial.printf("Yaw Kd = %.3f (decreased)\n", Kd_yaw);
       break;
       
     case 'H':
@@ -1229,7 +1232,7 @@ void handleCommand(char cmd) {
       if (isnan(Kp_yaw) || isinf(Kp_yaw)) Kp_yaw = 0.5;
       if (isnan(Ki_yaw) || isinf(Ki_yaw)) Ki_yaw = 0.0;
       yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-      Serial.printf("Yaw Kd = %.2f (increased)\n", Kd_yaw);
+      Serial.printf("Yaw Kd = %.3f (increased)\n", Kd_yaw);
       break;
     
     case 'n':
@@ -1293,12 +1296,12 @@ void printTuningValues() {
   Serial.printf("  Velocity PID Output: %.3f° (angle offset, clamped to ±%.1f°, slew limited)\n", angleSetpointFromVel, VELOCITY_OUTPUT_MAX);
   Serial.printf("  Velocity Deadband: ±%.3f m/s (when setpoint = 0)  Filter alpha: %.2f\n", VELOCITY_DEADBAND, VELOCITY_FILTER_ALPHA);
   Serial.println("ANGLE PID CONTROL (Inner Loop - Balance):");
-  Serial.printf("  Angle Kp: %.2f  Angle Ki: %.2f  Angle Kd: %.2f\n", Kp, Ki, Kd);
+  Serial.printf("  Angle Kp: %.2f  Angle Ki: %.2f  Angle Kd: %.3f\n", Kp, Ki, Kd);
   Serial.printf("  Angle Filter Alpha: %.2f (~%.0f Hz cutoff)\n", angleFilterAlpha, -logf(1.0f - angleFilterAlpha) / (2.0f * PI * (PID_SAMPLE_TIME_MS / 1000.0f)));
   Serial.printf("  Base Angle Setpoint: %.2f°\n", baseSetpoint);
   Serial.printf("  Active Setpoint: %.2f° (base + velocity offset)\n", angleSetpoint);
   Serial.println("YAW PID CONTROL (Rotation):");
-  Serial.printf("  Kp_yaw: %.2f  Ki_yaw: %.2f  Kd_yaw: %.2f\n", Kp_yaw, Ki_yaw, Kd_yaw);
+  Serial.printf("  Kp_yaw: %.2f  Ki_yaw: %.2f  Kd_yaw: %.3f\n", Kp_yaw, Ki_yaw, Kd_yaw);
   Serial.printf("  Yaw Setpoint: %.2f°  Yaw Control: %s\n", yawSetpoint, yawControlEnabled ? "ENABLED" : "DISABLED");
   Serial.println("MOTOR CONTROL:");
   Serial.printf("  Max Current: %.2fA\n", maxCurrent);
@@ -1403,7 +1406,7 @@ void downloadLogData() {
   Serial.printf("  Velocity Kd: %.3f\n", Kd_vel);
   Serial.printf("  Angle Kp: %.2f\n", Kp);
   Serial.printf("  Angle Ki: %.2f\n", Ki);
-  Serial.printf("  Angle Kd: %.2f\n", Kd);
+  Serial.printf("  Angle Kd: %.3f\n", Kd);
   Serial.printf("  Base Angle Setpoint: %.2f degrees\n", baseSetpoint);
   Serial.println("MOTOR SETTINGS:");
   Serial.printf("  Max Current: %.1f A\n", maxCurrent);
@@ -1457,7 +1460,7 @@ bool loadSettings() {
     Kd_yaw = 0.0;
   }
   if (isnan(angleFilterAlpha) || isinf(angleFilterAlpha) || angleFilterAlpha < 0.0f || angleFilterAlpha > 1.0f) {
-    angleFilterAlpha = 0.3f;
+    angleFilterAlpha = 0.15f;
   }
   
   velocityPID.SetTunings(Kp_vel, Ki_vel, Kd_vel);
