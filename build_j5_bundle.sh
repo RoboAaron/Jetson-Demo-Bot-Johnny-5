@@ -1023,7 +1023,7 @@ EOF
 
   cat > "${BUNDLE_ROOT}/scripts/08_verify_install.sh" <<'EOF'
 #!/usr/bin/env bash
-set -u
+set +u
 set -o pipefail
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -1034,8 +1034,9 @@ source /opt/ros/humble/setup.bash || { fail "Source ROS 2 environment"; exit 1; 
 [[ -f "${HOME}/ros2_ws/install/setup.bash" ]] && source "${HOME}/ros2_ws/install/setup.bash"
 
 ros2 doctor >/dev/null 2>&1 && pass "ros2 doctor" || fail "ros2 doctor"
-ros2 pkg list | grep -q johnny && pass "ros2 pkg list | grep johnny" || fail "ros2 pkg list | grep johnny"
-ros2 pkg list | grep -q balance_bridge && pass "balance_bridge package visible" || fail "balance_bridge package visible"
+PKGS=$(ros2 pkg list 2>/dev/null) || true
+echo "$PKGS" | grep -q johnny && pass "ros2 pkg list | grep johnny" || fail "ros2 pkg list | grep johnny"
+echo "$PKGS" | grep -q balance_bridge && pass "balance_bridge package visible" || fail "balance_bridge package visible"
 
 lsusb | grep -q 10c4 && pass "LiDAR / CP210x visible in lsusb" || fail "LiDAR / CP210x visible in lsusb"
 lsusb | grep -q 03e7 && pass "OAK-D / Myriad X visible in lsusb" || fail "OAK-D / Myriad X visible in lsusb"
@@ -1044,7 +1045,8 @@ lsusb | grep -q 16c0 && pass "Teensy visible in lsusb" || fail "Teensy visible i
 ros2 launch balance_bridge balance_bridge.launch.py >/tmp/johnny5_verify_bridge.log 2>&1 &
 BRIDGE_PID=$!
 sleep 8
-if ros2 topic list | grep -Eq '^/odom$|^/robot_state$|^/imu/roll$'; then
+TOPICS=$(ros2 topic list 2>/dev/null) || true
+if echo "$TOPICS" | grep -Eq '^/odom$|^/robot_state$|^/imu/roll$'; then
   pass "Bridge topics visible"
 else
   fail "Bridge topics visible"
