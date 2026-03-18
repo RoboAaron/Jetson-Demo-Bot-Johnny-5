@@ -600,6 +600,88 @@ clone_and_pack_depthai() {
   clone_and_pack_repo "https://github.com/luxonis/depthai-ros.git" "depthai-ros"
 }
 
+# Patch LD19 launch to use port_name LaunchConfiguration (default /dev/ldlidar) for udev symlink.
+patch_ldlidar_ld19_launch() {
+  local dir="${BUNDLE_ROOT}/ros2_src/ldlidar_stl_ros2"
+  local tarball="${BUNDLE_ROOT}/ros2_src/ldlidar_stl_ros2.tar.gz"
+  local launch_file="${dir}/launch/ld19.launch.py"
+  if [[ ! -f "${tarball}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${launch_file}" ]]; then
+    (cd "${BUNDLE_ROOT}/ros2_src" && tar xzf ldlidar_stl_ros2.tar.gz) || { fail "Extract ldlidar_stl_ros2 for patch"; return 1; }
+  fi
+  cat > "${launch_file}" <<'LDPATCH'
+#!/usr/bin/env python3
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+'''
+Parameter Description:
+---
+- Set laser scan directon:
+  1. Set counterclockwise, example: {'laser_scan_dir': True}
+  2. Set clockwise,        example: {'laser_scan_dir': False}
+- Angle crop setting, Mask data within the set angle range:
+  1. Enable angle crop fuction:
+    1.1. enable angle crop,  example: {'enable_angle_crop_func': True}
+    1.2. disable angle crop, example: {'enable_angle_crop_func': False}
+  2. Angle cropping interval setting:
+  - The distance and intensity data within the set angle range will be set to 0.
+  - angle >= 'angle_crop_min' and angle <= 'angle_crop_max' which is [angle_crop_min, angle_crop_max], unit is degress.
+    example:
+      {'angle_crop_min': 135.0}
+      {'angle_crop_max': 225.0}
+      which is [135.0, 225.0], angle unit is degress.
+'''
+
+def generate_launch_description():
+  port_arg = DeclareLaunchArgument(
+      'port_name',
+      default_value='/dev/ldlidar',
+      description='Serial port for LiDAR (use udev symlink /dev/ldlidar for CP210x)'
+  )
+
+  # LDROBOT LiDAR publisher node
+  ldlidar_node = Node(
+      package='ldlidar_stl_ros2',
+      executable='ldlidar_stl_ros2_node',
+      name='LD19',
+      output='screen',
+      parameters=[
+        {'product_name': 'LDLiDAR_LD19'},
+        {'topic_name': 'scan'},
+        {'frame_id': 'base_laser'},
+        {'port_name': LaunchConfiguration('port_name')},
+        {'port_baudrate': 230400},
+        {'laser_scan_dir': True},
+        {'enable_angle_crop_func': False},
+        {'angle_crop_min': 135.0},
+        {'angle_crop_max': 225.0}
+      ]
+  )
+
+  # base_link to base_laser tf node
+  base_link_to_laser_tf_node = Node(
+    package='tf2_ros',
+    executable='static_transform_publisher',
+    name='base_link_to_base_laser_ld19',
+    arguments=['0','0','0.18','0','0','0','base_link','base_laser']
+  )
+
+  ld = LaunchDescription()
+  ld.add_action(port_arg)
+  ld.add_action(ldlidar_node)
+  ld.add_action(base_link_to_laser_tf_node)
+  return ld
+LDPATCH
+  (cd "${BUNDLE_ROOT}/ros2_src" && rm -f ldlidar_stl_ros2.tar.gz && tar czf ldlidar_stl_ros2.tar.gz ldlidar_stl_ros2) \
+    && pass "Patched ld19.launch.py (port_name=/dev/ldlidar) and repacked ldlidar_stl_ros2.tar.gz" \
+    || fail "Repack ldlidar_stl_ros2.tar.gz"
+}
+
 download_whisper_model() {
   if [[ -z "${J5_BUNDLE_FRESH:-}" ]] && [[ -d "${BUNDLE_ROOT}/models/whisper_cache" ]] && [[ -n "$(ls -A "${BUNDLE_ROOT}/models/whisper_cache" 2>/dev/null)" ]]; then
     pass "Skipping Whisper (whisper_cache already present)"
@@ -900,7 +982,7 @@ EOF
 
   cat > "${BUNDLE_ROOT}/scripts/04_build_ros2_workspace.sh" <<'EOF'
 #!/usr/bin/env bash
-set -u
+set +u
 set -o pipefail
 BUNDLE_ROOT="${1:-/mnt/j5bundle}"
 WS="${HOME}/ros2_ws"
@@ -918,7 +1000,7 @@ tar xzf "${BUNDLE_ROOT}/ros2_src/johnny5.tar.gz" && pass "Extracted johnny5.tar.
 tar xzf "${BUNDLE_ROOT}/ros2_src/ldlidar_stl_ros2.tar.gz" && pass "Extracted ldlidar_stl_ros2.tar.gz" || fail "Extract ldlidar_stl_ros2.tar.gz"
 tar xzf "${BUNDLE_ROOT}/ros2_src/depthai-ros.tar.gz" && pass "Extracted depthai-ros.tar.gz" || fail "Extract depthai-ros.tar.gz"
 
-touch "${WS}/src/depthai-ros/COLCON_IGNORE" && pass "Disabled depthai-ros default build (source preserved for later bring-up)" || fail "Disable depthai-ros default build"
+rm -f "${WS}/src/depthai-ros/COLCON_IGNORE" && pass "Enabled depthai-ros build (OAK-D driver)" || true
 
 ln -sfn "${WS}/src/johnny5/jetson/ros2" "${WS}/src/balance_bridge" && pass "Linked balance_bridge" || fail "Link balance_bridge"
 ln -sfn "${WS}/src/johnny5/johnny5_bringup" "${WS}/src/johnny5_bringup" && pass "Linked johnny5_bringup" || fail "Link johnny5_bringup"
@@ -1090,7 +1172,7 @@ If a step fails:
   1. Check FALLBACKS.txt in pip_wheels/ for source-only Python packages.
   2. Re-run the individual numbered script that failed.
   3. Review bundle_build.log and ERRORS.txt from the host build.
-  4. For optional depthai-ros source, note that it is bundled but skipped by default in workspace build.
+  4. depthai-ros (OAK-D driver) is built with the workspace; ensure OAK-D udev rules are installed (script 05).
 EOF
   pass "Wrote README.txt"
 }
@@ -1166,6 +1248,7 @@ main() {
 
   clone_and_pack_repo "https://github.com/RoboAaron/Jetson-Demo-Bot-Johnny-5.git" "johnny5"
   clone_and_pack_repo "https://github.com/ldrobotSensorTeam/ldlidar_stl_ros2.git" "ldlidar_stl_ros2"
+  patch_ldlidar_ld19_launch
   clone_and_pack_depthai
 
   run_or_log "Download Whisper small.en model" download_whisper_model
