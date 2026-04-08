@@ -36,10 +36,15 @@ Adafruit_BNO08x bno08x(-1);  // I2C mode (no reset pin needed)
 sh2_SensorValue_t sensorValue;
 VescUart vescLeft;
 VescUart vescRight;
+IntervalTimer anglePIDTimer;
 
 // IMU data
 bool imuWorking = false;
-float pitch = 0.0, roll = 0.0, yaw = 0.0;
+float pitch = 0.0;
+volatile float yaw = 0.0f;
+volatile float roll = 0.0f;
+volatile bool newImuData = false;
+volatile float gyroPitchRate = 0.0f;  // rad/s, positive = tilting forward
 
 // VESC communication tracking (for diagnostics)
 unsigned long vescFailCount = 0;
@@ -79,9 +84,18 @@ bool useVelocityLoop = false;  // Default false for testing; 'v' toggles. Match 
 
 // ANGLE CONTROL LOOP (Inner Loop - from single-loop)
 double baseSetpoint = -0.70;  // Base balance angle (degrees) - from LAST_WORKING_CONFIG.md
-double angleSetpoint = 0.0;   // Active setpoint = baseSetpoint + angleSetpointFromVel (or baseSetpoint when vel loop off)
-double angleInput;             // Current roll angle (degrees)
-double motorCurrent;           // PID output: motor current (Amps)
+volatile float angleSetpoint = 0.0f;   // Active setpoint = baseSetpoint + angleSetpointFromVel (or baseSetpoint when vel loop off)
+volatile float angleInput = 0.0f;      // Current roll angle (degrees)
+volatile float motorCurrent = 0.0f;    // PID output: motor current (Amps)
+volatile float leftMotorCurrent = 0.0f;
+volatile float rightMotorCurrent = 0.0f;
+volatile bool safetyCutoffActive = true;
+volatile bool pidFrozen = false;
+
+// PID_v1 uses double pointers; keep dedicated PID backing variables and mirror to volatile floats.
+double pidAngleSetpoint = 0.0;
+double pidAngleInput = 0.0;
+double pidMotorCurrent = 0.0;
 
 // Angle PID defaults tuned to match the filtered single-loop controller.
 double Kp = 5.0;    // Proportional gain (single-loop used 5.0; tune 4.5–6.0)
@@ -92,7 +106,7 @@ double Kd = 0.03;   // Lower starting Kd: raw 500 Hz angle data made 0.3 saturat
 // Alpha = 0.3 gives roughly a 24 Hz cutoff at the 500 Hz angle PID rate.
 float angleFilterAlpha = 0.15f;
 
-PID balancePID(&angleInput, &motorCurrent, &angleSetpoint, Kp, Ki, Kd, DIRECT);
+PID balancePID(&pidAngleInput, &pidMotorCurrent, &pidAngleSetpoint, Kp, Ki, Kd, DIRECT);
 
 // YAW CONTROL: Prevents unwanted rotation (from single-loop)
 double yawSetpoint = 0.0;    // Target yaw angle (degrees) - initialized when balancing starts
@@ -185,6 +199,7 @@ const uint32_t SETTINGS_MAGIC = 0xC45C4DEE;  // Bump to add angleFilterAlpha and
 
 bool loadSettings();
 void saveSettings();
+void runAngleControlISR();
 
 // Control mode
 enum ControlMode {
@@ -233,9 +248,6 @@ bool streamData = true;
 unsigned long logStartTime = 0;
 unsigned long lastLogTime = 0;
 const unsigned long LOG_INTERVAL = 20; // 50Hz logging
-
-// Motor write rate limit (CRITICAL-7: match VESC read rate to prevent buffer overflow / loop jitter)
-static unsigned long lastMotorWrite = 0;
 
 // Data arrays for analysis
 struct LogData {
@@ -286,19 +298,96 @@ void sendMotorCurrents(float leftA, float rightA) {
   }
 }
 
+void runAngleControlISR() {
+  if (!imuWorking || safetyCutoffActive) {
+    if (!pidFrozen) {
+      balancePID.SetMode(MANUAL);
+      pidFrozen = true;
+    }
+    motorCurrent = 0.0f;
+    leftMotorCurrent = 0.0f;
+    rightMotorCurrent = 0.0f;
+    sendMotorCurrents(0.0f, 0.0f);
+    return;
+  }
+
+  if (pidFrozen) {
+    balancePID.SetMode(AUTOMATIC);
+    pidFrozen = false;
+  }
+
+  float outputCurrent = 0.0f;
+  if (controlMode == MODE_DIAGNOSTIC) {
+    float angleError = roll - angleSetpoint;
+    if (fabs(angleError) >= 0.2f) {
+      outputCurrent = constrain(angleError * 2.0f, -maxCurrent, maxCurrent);
+    }
+    motorCurrent = outputCurrent;
+  } else {
+    pidAngleInput = angleInput;
+    pidAngleSetpoint = angleSetpoint;
+    balancePID.Compute();
+    motorCurrent = (float)pidMotorCurrent;
+    outputCurrent = motorCurrent;
+  }
+
+  float yawCorr = 0.0f;
+  if (yawControlEnabled) {
+    static bool yawSetpointInitialized = false;
+    if (!yawSetpointInitialized) yawSetpoint = yaw;
+    yawSetpointInitialized = true;
+
+    yawInput = yaw;
+    yawPID.Compute();
+    yawCorr = (float)yawOutput;
+    if (isnan(yawCorr) || isinf(yawCorr)) yawCorr = 0.0f;
+    float maxYawOutput = maxCurrent * 0.3f;
+    yawCorr = constrain(yawCorr, -maxYawOutput, maxYawOutput);
+    yawOutput = yawCorr;
+  } else {
+    yawOutput = 0.0;
+  }
+
+  float leftCmd = -outputCurrent - yawCorr;
+  float rightCmd = outputCurrent + yawCorr;
+
+  leftCmd *= LEFT_MOTOR_DIRECTION_SIGN;
+  rightCmd *= RIGHT_MOTOR_DIRECTION_SIGN;
+
+  bool velocityLoopActive = useVelocityLoop && !FORCE_SINGLE_LOOP_MODE;
+  bool parityModeActive = SINGLE_LOOP_PARITY_WHEN_VEL_OFF && !velocityLoopActive && !yawControlEnabled;
+  if (parityModeActive) {
+    if (fabs(leftCmd) < PARITY_MIN_CURRENT) leftCmd = 0.0f;
+    if (fabs(rightCmd) < PARITY_MIN_CURRENT) rightCmd = 0.0f;
+  } else {
+    leftCmd = applyStictionComp(leftCmd);
+    rightCmd = applyStictionComp(rightCmd);
+  }
+
+  leftMotorCurrent = constrain(leftCmd, -maxCurrent, maxCurrent);
+  rightMotorCurrent = constrain(rightCmd, -maxCurrent, maxCurrent);
+
+  if (motorOutputEnabled) {
+    sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
+  } else {
+    sendMotorCurrents(0.0f, 0.0f);
+  }
+  newImuData = false;
+}
+
 void setup() {
   Serial.begin(2000000);
   delay(1000);
-  
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
-  
+
   Serial.println("╔════════════════════════════════════════════════════╗");
   Serial.println("║  BALANCE ROBOT - CASCADED VELOCITY CONTROL       ║");
   Serial.println("║  Phase 1: Velocity Control Loop                    ║");
   Serial.println("╚════════════════════════════════════════════════════╝");
   Serial.println();
-  
+
   Serial.println("🚀 SYSTEM CONFIGURATION:");
   Serial.printf("   • I2C Clock Speed: %d kHz (Fast Mode)\n", I2C_CLOCK_SPEED / 1000);
   Serial.printf("   • IMU Update Rate: %d Hz\n", IMU_UPDATE_RATE_HZ);
@@ -306,21 +395,21 @@ void setup() {
   Serial.printf("   • Velocity PID Rate: %d Hz\n", 1000 / VELOCITY_PID_SAMPLE_TIME_MS);
   Serial.printf("   • VESC Update Rate: %d Hz (limited)\n", 1000 / VESC_UPDATE_INTERVAL_MS);
   Serial.println();
-  
+
   // Initialize I2C at optimized speed
   Serial.println("📡 Initializing I2C bus...");
   Wire.begin();
   Wire.setClock(I2C_CLOCK_SPEED);
   Serial.printf("   ✓ I2C initialized at %d kHz\n", I2C_CLOCK_SPEED / 1000);
   Serial.println();
-  
+
   // Initialize IMU
   Serial.println("🔧 Initializing IMU...");
-  
+
   // Try 0x4B first (matches working baseline)
   if (bno08x.begin_I2C(0x4B)) {
     Serial.println("   ✅ IMU initialized at 0x4B");
-    
+
     // Enable rotation vector at optimized rate
     Serial.printf("   Enabling rotation vector at %d Hz...\n", IMU_UPDATE_RATE_HZ);
     if (!bno08x.enableReport(SH2_ROTATION_VECTOR, IMU_REPORT_INTERVAL_US)) {
@@ -328,12 +417,17 @@ void setup() {
     } else {
       Serial.printf("   ✅ Rotation vector enabled at %d Hz\n", IMU_UPDATE_RATE_HZ);
       imuWorking = true;
+      if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, IMU_REPORT_INTERVAL_US)) {
+        Serial.println("   ❌ Could not enable gyroscope calibrated report");
+      } else {
+        Serial.println("   ✅ Gyroscope calibrated report enabled at 400Hz");
+      }
     }
   } else {
     Serial.println("   Trying alternate address 0x4A...");
     if (bno08x.begin_I2C(0x4A)) {
       Serial.println("   ✅ IMU initialized at 0x4A");
-      
+
       // Enable rotation vector at optimized rate
       Serial.printf("   Enabling rotation vector at %d Hz...\n", IMU_UPDATE_RATE_HZ);
       if (!bno08x.enableReport(SH2_ROTATION_VECTOR, IMU_REPORT_INTERVAL_US)) {
@@ -341,6 +435,11 @@ void setup() {
       } else {
         Serial.printf("   ✅ Rotation vector enabled at %d Hz\n", IMU_UPDATE_RATE_HZ);
         imuWorking = true;
+        if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, IMU_REPORT_INTERVAL_US)) {
+          Serial.println("   ❌ Could not enable gyroscope calibrated report");
+        } else {
+          Serial.println("   ✅ Gyroscope calibrated report enabled at 400Hz");
+        }
       }
     } else {
       Serial.println("   ❌ IMU failed to initialize at both addresses");
@@ -352,9 +451,9 @@ void setup() {
       Serial.println("      • Try slower I2C speed: May need 100kHz initially");
     }
   }
-  
+
   Serial.println();
-  
+
   // Initialize VESCs
   Serial.println("⚙️  Initializing VESC motor controllers...");
   Serial1.begin(115200);
@@ -363,7 +462,7 @@ void setup() {
   vescRight.setSerialPort(&Serial2);
   Serial.println("   ✅ VESCs initialized");
   Serial.println();
-  
+
   // Load saved settings (if available)
   if (loadSettings()) {
     Serial.println("💾 Loaded saved settings from EEPROM");
@@ -387,19 +486,19 @@ void setup() {
   if (isnan(Kd_yaw) || isinf(Kd_yaw) || Kd_yaw < 0 || Kd_yaw > 5.0) {
     Kd_yaw = 0.0;
   }
-  
+
   yawPID.SetTunings(Kp_yaw, Ki_yaw, Kd_yaw);
-  
+
   // Ensure velocity PID is PI only (Kd always 0)
   Kd_vel = 0.0;
   velocityPID.SetTunings(Kp_vel, Ki_vel, Kd_vel);
-  
+
   // Initialize angle PID controller (inner loop - fast)
   Serial.println("🎛️  Initializing PID controllers...");
   balancePID.SetMode(AUTOMATIC);
   balancePID.SetOutputLimits(-maxCurrent, maxCurrent);
   balancePID.SetSampleTime(PID_SAMPLE_TIME_MS);  // 500Hz update rate
-  
+
   // === CHANGED === Velocity PID: start in MANUAL when velocity loop disabled (useVelocityLoop false).
   if (useVelocityLoop && !FORCE_SINGLE_LOOP_MODE) {
     velocityPID.SetMode(AUTOMATIC);
@@ -410,19 +509,21 @@ void setup() {
   }
   velocityPID.SetOutputLimits(-VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
   velocityPID.SetSampleTime(VELOCITY_PID_SAMPLE_TIME_MS);
-  
+
   // Initialize yaw PID controller
   yawPID.SetMode(AUTOMATIC);
   yawPID.SetOutputLimits(-maxCurrent, maxCurrent);
   yawPID.SetSampleTime(PID_SAMPLE_TIME_MS);  // 500Hz update rate
-  
+
   Serial.printf("   ✅ Angle PID: %d Hz update rate\n", 1000 / PID_SAMPLE_TIME_MS);
   Serial.printf("   ✅ Velocity PID: %d Hz update rate\n", 1000 / VELOCITY_PID_SAMPLE_TIME_MS);
   Serial.printf("   ✅ Angle Gains: Kp=%.2f, Ki=%.2f, Kd=%.3f\n", Kp, Ki, Kd);
   Serial.printf("   ✅ Velocity Gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp_vel, Ki_vel, Kd_vel);
   Serial.printf("   ✅ Max Current: %.1fA\n", maxCurrent);
+  anglePIDTimer.begin(runAngleControlISR, 2000);  // 500 Hz hardware timer ISR
+  Serial.println("   ✅ Angle PID ISR timer: 500 Hz (2000 us)");
   Serial.println();
-  
+
   Serial.println("════════════════════════════════════════════════════");
   Serial.println("✅ SYSTEM READY - Cascaded Velocity Control");
   Serial.println("════════════════════════════════════════════════════");
@@ -492,11 +593,56 @@ void loop() {
   // Get IMU data with failure tracking
   bool imuDataReceived = false;
   if (imuWorking) {
-    if (bno08x.getSensorEvent(&sensorValue)) {
-      imuDataReceived = true;
-      imuReadCount++;
-      lastIMUUpdate = millis();
-    } else {
+    while (bno08x.getSensorEvent(&sensorValue)) {
+      if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+        imuDataReceived = true;
+        imuReadCount++;
+        lastIMUUpdate = millis();
+
+        // Get quaternion
+        float qw = sensorValue.un.rotationVector.real;
+        float qx = sensorValue.un.rotationVector.i;
+        float qy = sensorValue.un.rotationVector.j;
+        float qz = sensorValue.un.rotationVector.k;
+
+        // Convert to Euler angles
+        float sinp = 2.0f * (qw * qy - qz * qx);
+        if (abs(sinp) >= 1)
+          pitch = copysign(PI / 2, sinp);
+        else
+          pitch = asin(sinp);
+
+        roll = atan2(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
+        yaw = atan2(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
+
+        pitch *= 180.0f / PI;
+        roll *= 180.0f / PI;
+        yaw *= 180.0f / PI;
+
+        // IMU orientation correction (mounted upside down) - matches working baseline
+        pitch = -pitch;
+        roll += 180.0f;
+        if (roll > 180.0f) roll -= 360.0f;
+        if (roll < -180.0f) roll += 360.0f;
+
+        // Low-pass filter remains in loop; angle ISR consumes angleInput at fixed 500 Hz.
+        static float angleFiltered = 0.0f;
+        static bool angleFilterInitialized = false;
+        if (!angleFilterInitialized) {
+          angleFiltered = roll;
+          angleFilterInitialized = true;
+        }
+        angleFiltered = angleFilterAlpha * roll + (1.0f - angleFilterAlpha) * angleFiltered;
+        angleInput = angleFiltered;
+        newImuData = true;
+      } else if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+        // Gyro Y axis = pitch rate. Sign: positive = tilting forward.
+        // IMU is mounted upside down, so negate to match roll orientation correction.
+        gyroPitchRate = -sensorValue.un.gyroscope.y;
+      }
+    }
+
+    if (!imuDataReceived) {
       imuFailCount++;
       // Check if IMU has stopped responding (no data for >100ms at 400Hz)
       if (lastIMUUpdate > 0 && (millis() - lastIMUUpdate > 100)) {
@@ -552,36 +698,6 @@ void loop() {
       }
       
       lastIMUStats = millis();
-    }
-  }
-  
-  if (imuDataReceived) {
-    if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
-      // Get quaternion
-      float qw = sensorValue.un.rotationVector.real;
-      float qx = sensorValue.un.rotationVector.i;
-      float qy = sensorValue.un.rotationVector.j;
-      float qz = sensorValue.un.rotationVector.k;
-      
-      // Convert to Euler angles
-      float sinp = 2.0f * (qw * qy - qz * qx);
-      if (abs(sinp) >= 1)
-        pitch = copysign(PI / 2, sinp);
-      else
-        pitch = asin(sinp);
-      
-      roll = atan2(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
-      yaw = atan2(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
-      
-      pitch *= 180.0f / PI;
-      roll *= 180.0f / PI;
-      yaw *= 180.0f / PI;
-      
-      // IMU orientation correction (mounted upside down) - matches working baseline
-      pitch = -pitch;
-      roll += 180.0f;
-      if (roll > 180.0f) roll -= 360.0f;
-      if (roll < -180.0f) roll += 360.0f;
     }
   }
   
@@ -736,33 +852,18 @@ void loop() {
     }
   }
 
-  // CASCADED BALANCE CONTROL
-  float leftMotorCurrent = 0.0;
-  float rightMotorCurrent = 0.0;
-  float outputCurrent = 0.0;
-  yawOutput = 0.0;
-  
   if (imuWorking) {
     // Safety check - disable motors if robot is too far tilted
-    bool isBalanceable = (abs(roll) < 25.0);
-    // CRITICAL-1: Freeze PIDs when in safety cutoff so integral doesn't wind up; thaw on re-enter.
-    static bool pidFrozen = false;
+    bool isBalanceable = (abs(roll) < 25.0f);
+    safetyCutoffActive = !isBalanceable;
 
     if (!isBalanceable) {
-      if (!pidFrozen) {
-        balancePID.SetMode(MANUAL);
-        velocityPID.SetMode(MANUAL);
-        yawPID.SetMode(MANUAL);
-        pidFrozen = true;
-      }
-      motorCurrent = 0.0;
-      leftMotorCurrent = 0.0;
-      rightMotorCurrent = 0.0;
+      velocityPID.SetMode(MANUAL);
+      yawPID.SetMode(MANUAL);
+      motorCurrent = 0.0f;
+      leftMotorCurrent = 0.0f;
+      rightMotorCurrent = 0.0f;
       angleSetpointFromVel = 0.0;  // Reset velocity PID output
-      if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
-        lastMotorWrite = millis();
-        sendMotorCurrents(0.0f, 0.0f);
-      }
 
       static unsigned long lastSafetyDebug = 0;
       if (millis() - lastSafetyDebug > 1000) {
@@ -770,138 +871,35 @@ void loop() {
         lastSafetyDebug = millis();
       }
     } else {
-      if (pidFrozen) {
-        balancePID.SetMode(AUTOMATIC);
-        velocityPID.SetMode(AUTOMATIC);
-        yawPID.SetMode(AUTOMATIC);
-        pidFrozen = false;
-      }
-      // NORMAL CONTROL: Cascaded PID
-      // === CHANGED === angleSetpoint already set above (baseSetpoint or base+angleFromVel); do not overwrite here.
-      // Low-pass filter the angle input before the derivative term sees it.
-      // Without this, tiny sample-to-sample IMU changes at 500 Hz become huge Kd spikes.
-      static float angleFiltered = 0.0f;
-      static bool angleFilterInitialized = false;
-      if (!angleFilterInitialized) {
-        angleFiltered = roll;
-        angleFilterInitialized = true;
-      }
-      angleFiltered = angleFilterAlpha * roll + (1.0f - angleFilterAlpha) * angleFiltered;
-      angleInput = angleFiltered;
-      
-      outputCurrent = 0.0;
-      
-      if (controlMode == MODE_DIAGNOSTIC) {
-        // DIAGNOSTIC MODE: Direct angle → current mapping (no PID)
-        float angleError = roll - angleSetpoint;
-        
-        if (abs(angleError) < 0.2) {
-          outputCurrent = 0.0;
-        } else {
-          outputCurrent = angleError * 2.0;
-          outputCurrent = constrain(outputCurrent, -maxCurrent, maxCurrent);
-        }
-      } else {
-        // PID MODE: Normal cascaded control
-        balancePID.Compute();  // Computes motorCurrent
-        outputCurrent = motorCurrent;
-        // NOTE: minCurrent deadzone removed - stiction compensation handles this better
-      }
-      
-      // YAW CONTROL: Compute yaw correction to prevent unwanted rotation
-      if (yawControlEnabled) {
-        static bool yawSetpointInitialized = false;
-        if (!yawSetpointInitialized) {
-          yawSetpoint = yaw;
-          yawSetpointInitialized = true;
-          Serial.printf("🎯 Yaw setpoint initialized to %.2f°\n", yawSetpoint);
-        }
-        
-        yawInput = yaw;
-        yawPID.Compute();
-        
-        if (isnan(yawOutput) || isinf(yawOutput)) {
-          yawOutput = 0.0;
-        }
-        
-        float maxYawOutput = maxCurrent * 0.3;
-        yawOutput = constrain(yawOutput, -maxYawOutput, maxYawOutput);
-        
-        // Split balance current and yaw correction into left/right
-        // Balance: left = -outputCurrent, right = +outputCurrent (differential drive)
-        // Yaw: subtract from left, add to right (or vice versa depending on yaw direction)
-        leftMotorCurrent = -outputCurrent - yawOutput;
-        rightMotorCurrent = outputCurrent + yawOutput;
-      } else {
-        // No yaw control: simple differential drive
-        leftMotorCurrent = -outputCurrent;
-        rightMotorCurrent = outputCurrent;
-      }
-      
-      // Apply per-motor direction signs (for VESC inversion or wiring differences)
-      // This compensates for motors that are inverted in VESC config
-      leftMotorCurrent *= LEFT_MOTOR_DIRECTION_SIGN;
-      rightMotorCurrent *= RIGHT_MOTOR_DIRECTION_SIGN;
+      if (velocityLoopActive && !FORCE_SINGLE_LOOP_MODE) velocityPID.SetMode(AUTOMATIC);
+      yawPID.SetMode(AUTOMATIC);
 
-      // In parity mode, match single-loop actuation when velocity and yaw are off.
-      bool parityModeActive = SINGLE_LOOP_PARITY_WHEN_VEL_OFF && !velocityLoopActive && !yawControlEnabled;
-      if (parityModeActive) {
-        // Single-loop style small-output deadzone (instead of 0.55A stiction jump).
-        if (fabs(leftMotorCurrent) < PARITY_MIN_CURRENT) leftMotorCurrent = 0.0f;
-        if (fabs(rightMotorCurrent) < PARITY_MIN_CURRENT) rightMotorCurrent = 0.0f;
-
-        leftMotorCurrent = constrain(leftMotorCurrent, -maxCurrent, maxCurrent);
-        rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
-
-        // Match single-loop behavior: write each loop (no 67Hz gate).
-        sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
-        lastMotorWrite = millis();
-      } else {
-        // Apply stiction compensation: jump over static friction threshold
-        // This ensures small PID corrections produce actual motor torque
-        leftMotorCurrent = applyStictionComp(leftMotorCurrent);
-        rightMotorCurrent = applyStictionComp(rightMotorCurrent);
-
-        // Constrain to safety limits after stiction compensation
-        leftMotorCurrent = constrain(leftMotorCurrent, -maxCurrent, maxCurrent);
-        rightMotorCurrent = constrain(rightMotorCurrent, -maxCurrent, maxCurrent);
-
-        // CRITICAL-7: Rate-limit motor writes to ~67 Hz (match VESC read rate)
-        if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
-          lastMotorWrite = millis();
-          sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
-        }
-      }
-      
       // === CHANGED === Rich debug every 100 ms when logging enabled (angleInput, setpoint, vel, deadband, useVelocityLoop, current).
       static unsigned long lastDebug = 0;
       if (loggingEnabled && (millis() - lastDebug >= 100)) {
         lastDebug = millis();
         Serial.printf("DBG100: angleIn=%.3f setpt=%.3f fromVel=%.3f filtVel=%.3f inDB=%d useVel=%d motor=%.3f\n",
                      angleInput, angleSetpoint, angleSetpointFromVel, filteredVelocity,
-                     inDeadband ? 1 : 0, useVelocityLoop ? 1 : 0, outputCurrent);
+                     inDeadband ? 1 : 0, useVelocityLoop ? 1 : 0, motorCurrent);
       } else if (!loggingEnabled && (millis() - lastDebug > 500)) {
         lastDebug = millis();
         Serial.printf("🔧 DEBUG: Roll=%.2f°, Vel=%.3f/%.3f, VelPID=%.3f°, Out=%.4fA, Left=%.4fA, Right=%.4fA\n",
-                     roll, filteredVelocity, velocitySetpoint, angleSetpointFromVel, outputCurrent,
+                     roll, filteredVelocity, velocitySetpoint, angleSetpointFromVel, motorCurrent,
                      leftMotorCurrent, rightMotorCurrent);
       }
       
       // Log data if enabled
       if (loggingEnabled && (millis() - lastLogTime >= LOG_INTERVAL)) {
-        logData(outputCurrent, leftMotorCurrent, rightMotorCurrent, yawOutput);
+        logData(motorCurrent, leftMotorCurrent, rightMotorCurrent, yawOutput);
         lastLogTime = millis();
       }
     }
   } else {
-    // IMU not working - disable motors (rate-limited)
-    if (millis() - lastMotorWrite >= VESC_UPDATE_INTERVAL_MS) {
-      lastMotorWrite = millis();
-      sendMotorCurrents(0.0f, 0.0f);
-    }
-    motorCurrent = 0.0;
-    leftMotorCurrent = 0.0;
-    rightMotorCurrent = 0.0;
+    // IMU not working - ISR will hold motors at zero.
+    safetyCutoffActive = true;
+    motorCurrent = 0.0f;
+    leftMotorCurrent = 0.0f;
+    rightMotorCurrent = 0.0f;
     yawOutput = 0.0;
     angleSetpointFromVel = 0.0;
   }
