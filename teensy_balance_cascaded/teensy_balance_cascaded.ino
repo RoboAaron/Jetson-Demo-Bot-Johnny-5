@@ -32,7 +32,8 @@
 #include <EEPROM.h>
 
 // Global objects
-Adafruit_BNO08x bno08x(-1);  // I2C mode (no reset pin needed)
+const int8_t BNO085_RST_PIN = 17;  // Teensy pin 17 → BNO085 RST (active-low). Set to -1 if not wired.
+Adafruit_BNO08x bno08x(BNO085_RST_PIN);
 sh2_SensorValue_t sensorValue;
 VescUart vescLeft;
 VescUart vescRight;
@@ -40,11 +41,17 @@ IntervalTimer anglePIDTimer;
 
 // IMU data
 bool imuWorking = false;
+bool ignoreNextImuReset = false;
+bool firstImuDataReceived = false;
+unsigned long firstImuDataTime = 0;
+const unsigned long IMU_SETTLE_MS = 500;
 float pitch = 0.0;
 volatile float yaw = 0.0f;
 volatile float roll = 0.0f;
 volatile bool newImuData = false;
 volatile float gyroPitchRate = 0.0f;  // rad/s, positive = tilting forward
+volatile float imuVelocity = 0.0f;    // m/s, pitch-rate integrated estimate (Option A)
+unsigned long lastGyroMicros = 0;
 
 // VESC communication tracking (for diagnostics)
 unsigned long vescFailCount = 0;
@@ -68,10 +75,14 @@ PID velocityPID(&velocityInput, &angleSetpointFromVel, &velocitySetpoint, Kp_vel
 // Velocity filtering and control
 // === CHANGED === Stronger filtering and wider deadband so standstill stays in deadband (VESC ERPM noise).
 float filteredVelocity = 0.0;           // EMA + moving-average filtered velocity (m/s)
-const float VELOCITY_FILTER_ALPHA = 0.04;  // EMA coefficient (lower = more filtering; 0.04 = heavy smoothing)
-const float VELOCITY_DEADBAND = 0.25;      // Deadband when setpoint = 0 (m/s) — wider so noise doesn't exit
+const float VELOCITY_FILTER_ALPHA = 0.30;  // IMU velocity is cleaner; use lighter filtering for responsiveness
+const float VELOCITY_DEADBAND = 0.02;      // IMU standstill signal is near genuine zero
 const float VELOCITY_OUTPUT_MAX = 0.5;    // Maximum velocity PID output (±degrees)
 const float VELOCITY_SLEW_RATE = 0.05;    // Maximum change per update (degrees)
+float velScale = 1.0f;                    // Tunable scale factor for IMU pitch-rate velocity model
+const float VEL_DECAY = 0.002f;           // Per-sample decay to bound long-term integration drift
+const float VEL_SCALE_STEP_COARSE = 0.10f;
+const float VEL_SCALE_STEP_FINE = 0.02f;
 float lastAngleSetpointFromVel = 0.0;     // For slew rate limiting
 // Moving-average buffer (samples of EMA output) for extra smoothing at standstill
 const int VELOCITY_MA_SIZE = 6;
@@ -89,6 +100,7 @@ volatile float angleInput = 0.0f;      // Current roll angle (degrees)
 volatile float motorCurrent = 0.0f;    // PID output: motor current (Amps)
 volatile float leftMotorCurrent = 0.0f;
 volatile float rightMotorCurrent = 0.0f;
+volatile bool motorCommandPending = false;
 volatile bool safetyCutoffActive = true;
 volatile bool pidFrozen = false;
 
@@ -126,6 +138,7 @@ float leftVelocity = 0.0;   // m/s (persists between VESC reads)
 float rightVelocity = 0.0;  // m/s (persists between VESC reads)
 float avgVelocity = 0.0;    // m/s
 const float WHEEL_DIAMETER = 0.165;  // meters (from VESC XML: si_wheel_diameter=0.165)
+const float WHEEL_RADIUS = WHEEL_DIAMETER * 0.5f;
 const int MOTOR_POLES = 30;          // Total motor poles (from VESC XML: si_motor_poles=30)
 const int POLE_PAIRS = 15;           // Pole pairs (MOTOR_POLES / 2 = 15)
 const float GEAR_RATIO = 1.0;        // Gear ratio (from VESC XML: gear_ratio=1, direct drive)
@@ -152,7 +165,7 @@ const bool BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF = true;
 // Fine adjust mode (for smaller tuning steps)
 bool fineAdjust = false;
 // Dry-run mode: keep computing/logging commanded currents but suppress motor commands.
-bool motorOutputEnabled = true;
+bool motorOutputEnabled = false;
 const float KP_STEP_COARSE = 0.5;
 const float KP_STEP_FINE = 0.1;
 const float KI_STEP_COARSE = 0.05;
@@ -231,9 +244,12 @@ const float RIGHT_VELOCITY_SIGN = -1.0;       // Must match RIGHT_MOTOR_DIRECTIO
 const float VELOCITY_SIGN_DISAGREE_THRESHOLD = 0.05;  // m/s threshold to detect sign mismatch
 
 // I2C Configuration
-const uint32_t I2C_CLOCK_SPEED = 400000;  // 400kHz Fast Mode
-const uint32_t IMU_UPDATE_RATE_HZ = 400;  // 400Hz update rate
-const uint32_t IMU_REPORT_INTERVAL_US = 2500;  // 2500 microseconds = 2.5ms = 400Hz
+const uint32_t I2C_CLOCK_SPEED = 400000;  // 400kHz Fast Mode — required for 400Hz rotation vector bandwidth
+const uint8_t BNO085_PRIMARY_ADDRESS = 0x4B;
+const uint8_t BNO085_ALTERNATE_ADDRESS = 0x4A;
+const uint32_t IMU_UPDATE_RATE_HZ = 400;  // 400Hz rotation vector
+const uint32_t IMU_REPORT_INTERVAL_US = 2500;  // 2500 µs = 400Hz
+const uint32_t GYRO_REPORT_INTERVAL_US = 10000; // 10000 µs = 100Hz (gyro not used in control loop yet)
 
 // PID Update Rates
 const uint32_t PID_SAMPLE_TIME_MS = 2;  // 2ms = 500Hz (angle loop - fast)
@@ -241,6 +257,7 @@ const uint32_t VELOCITY_PID_SAMPLE_TIME_MS = 50;  // 50ms = 20Hz (velocity loop 
 
 // VESC Communication Rate Limiting (CRITICAL: Prevents serial buffer overflow)
 const uint32_t VESC_UPDATE_INTERVAL_MS = 15;  // 15ms = 67Hz (prevents buffer overflow)
+const uint32_t MOTOR_COMMAND_UPDATE_INTERVAL_MS = 5;  // 5ms = 200Hz motor command dispatch from loop()
 
 // Logging control
 bool loggingEnabled = false;
@@ -307,7 +324,7 @@ void runAngleControlISR() {
     motorCurrent = 0.0f;
     leftMotorCurrent = 0.0f;
     rightMotorCurrent = 0.0f;
-    sendMotorCurrents(0.0f, 0.0f);
+    motorCommandPending = true;
     return;
   }
 
@@ -366,18 +383,72 @@ void runAngleControlISR() {
 
   leftMotorCurrent = constrain(leftCmd, -maxCurrent, maxCurrent);
   rightMotorCurrent = constrain(rightCmd, -maxCurrent, maxCurrent);
-
-  if (motorOutputEnabled) {
-    sendMotorCurrents(leftMotorCurrent, rightMotorCurrent);
-  } else {
-    sendMotorCurrents(0.0f, 0.0f);
-  }
+  motorCommandPending = true;
   newImuData = false;
 }
 
+bool enableIMUReports() {
+  bool ok = true;
+  if (!bno08x.enableReport(SH2_ROTATION_VECTOR, IMU_REPORT_INTERVAL_US)) {
+    Serial.println("   ❌ Could not enable rotation vector");
+    ok = false;
+  } else {
+    Serial.printf("   ✅ Rotation vector enabled at %d Hz\n", IMU_UPDATE_RATE_HZ);
+  }
+  if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, GYRO_REPORT_INTERVAL_US)) {
+    Serial.println("   ❌ Could not enable gyroscope calibrated report");
+  } else {
+    Serial.printf("   ✅ Gyroscope calibrated report enabled at %d Hz\n", 1000000 / GYRO_REPORT_INTERVAL_US);
+  }
+  return ok;
+}
+
+// SH2_RESET clears active report subscriptions. Re-send sensor config after any wasReset(),
+// with the same settle + second enable timing used at startup (without begin_I2C here:
+// the SHTP session must stay open; begin_I2C in loop() can strand I2C after a bad sequence).
+bool recoverIMUReportsAfterSh2Reset() {
+  delay(500);
+  if (!enableIMUReports()) return false;
+  delay(500);
+  return enableIMUReports();
+}
+
+bool initializeIMUAtAddress(uint8_t address) {
+  if (!bno08x.begin_I2C(address)) return false;
+
+  Serial.printf("   ✅ IMU initialized at 0x%02X\n", address);
+  if (!enableIMUReports()) return false;
+
+  imuWorking = true;
+  // BNO085 internal sensor engine needs extra time after SHTP init.
+  // Perform a second reset + re-enable after 500ms to ensure reports start.
+  Serial.println("   Waiting for BNO085 sensor engine...");
+  delay(500);
+  digitalWrite(BNO085_RST_PIN, LOW);
+  delay(10);
+  digitalWrite(BNO085_RST_PIN, HIGH);
+  delay(500);
+  if (!enableIMUReports()) {
+    Serial.println("   ❌ Second enable failed");
+    imuWorking = false;
+    return false;
+  }
+
+  ignoreNextImuReset = true;
+  Serial.println("   ✅ BNO085 sensor engine ready");
+  return true;
+}
+
 void setup() {
+  // Assert BNO085 reset IMMEDIATELY — before oscillator can start in noisy environment
+  pinMode(BNO085_RST_PIN, OUTPUT);
+  digitalWrite(BNO085_RST_PIN, LOW);  // Oscillator cannot start while RST is LOW
+
+  // Pull up unused pin near I2C lines to reduce floating wire antenna effect
+  pinMode(15, INPUT_PULLUP);
+
   Serial.begin(2000000);
-  delay(1000);
+  delay(2000);
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
@@ -396,51 +467,47 @@ void setup() {
   Serial.printf("   • VESC Update Rate: %d Hz (limited)\n", 1000 / VESC_UPDATE_INTERVAL_MS);
   Serial.println();
 
-  // Initialize I2C at optimized speed
+  // Initialize I2C
   Serial.println("📡 Initializing I2C bus...");
   Wire.begin();
   Wire.setClock(I2C_CLOCK_SPEED);
   Serial.printf("   ✓ I2C initialized at %d kHz\n", I2C_CLOCK_SPEED / 1000);
+  Serial.printf("   ✓ BNO085 RST pin: %d (held LOW since power-on)\n", BNO085_RST_PIN);
   Serial.println();
 
-  // Initialize IMU
+  // Initialize VESCs (while BNO085 is still held in reset)
+  Serial.println("⚙️  Initializing VESC motor controllers...");
+  Serial1.begin(115200);
+  Serial2.begin(115200);
+  vescLeft.setSerialPort(&Serial1);
+  vescRight.setSerialPort(&Serial2);
+  Serial.println("   ✅ VESCs initialized");
+  delay(200);
+
+  // Release BNO085 reset — oscillator starts NOW in a settled environment
+  Serial.println("   Releasing BNO085 RST...");
+  digitalWrite(BNO085_RST_PIN, HIGH);
+  delay(500);  // Full oscillator startup + SHTP boot time
+  Serial.println("   ✅ BNO085 released from reset");
+  Serial.println();
+
+  // Initialize IMU — try 0x4B first (matches working baseline), then 0x4A
   Serial.println("🔧 Initializing IMU...");
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    Serial.printf("   IMU init attempt %d/3...\n", attempt);
+    if (initializeIMUAtAddress(BNO085_PRIMARY_ADDRESS)) break;
 
-  // Try 0x4B first (matches working baseline)
-  if (bno08x.begin_I2C(0x4B)) {
-    Serial.println("   ✅ IMU initialized at 0x4B");
-
-    // Enable rotation vector at optimized rate
-    Serial.printf("   Enabling rotation vector at %d Hz...\n", IMU_UPDATE_RATE_HZ);
-    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, IMU_REPORT_INTERVAL_US)) {
-      Serial.println("   ❌ Could not enable rotation vector");
-    } else {
-      Serial.printf("   ✅ Rotation vector enabled at %d Hz\n", IMU_UPDATE_RATE_HZ);
-      imuWorking = true;
-      if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, IMU_REPORT_INTERVAL_US)) {
-        Serial.println("   ❌ Could not enable gyroscope calibrated report");
-      } else {
-        Serial.println("   ✅ Gyroscope calibrated report enabled at 400Hz");
-      }
-    }
-  } else {
     Serial.println("   Trying alternate address 0x4A...");
-    if (bno08x.begin_I2C(0x4A)) {
-      Serial.println("   ✅ IMU initialized at 0x4A");
+    if (initializeIMUAtAddress(BNO085_ALTERNATE_ADDRESS)) break;
 
-      // Enable rotation vector at optimized rate
-      Serial.printf("   Enabling rotation vector at %d Hz...\n", IMU_UPDATE_RATE_HZ);
-      if (!bno08x.enableReport(SH2_ROTATION_VECTOR, IMU_REPORT_INTERVAL_US)) {
-        Serial.println("   ❌ Could not enable rotation vector");
-      } else {
-        Serial.printf("   ✅ Rotation vector enabled at %d Hz\n", IMU_UPDATE_RATE_HZ);
-        imuWorking = true;
-        if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, IMU_REPORT_INTERVAL_US)) {
-          Serial.println("   ❌ Could not enable gyroscope calibrated report");
-        } else {
-          Serial.println("   ✅ Gyroscope calibrated report enabled at 400Hz");
-        }
-      }
+    if (attempt < 3) {
+      Serial.println("   Retrying in 500ms...");
+      delay(500);
+      // Re-pulse RST before retry
+      digitalWrite(BNO085_RST_PIN, LOW);
+      delay(10);
+      digitalWrite(BNO085_RST_PIN, HIGH);
+      delay(500);
     } else {
       Serial.println("   ❌ IMU failed to initialize at both addresses");
       Serial.println();
@@ -451,16 +518,6 @@ void setup() {
       Serial.println("      • Try slower I2C speed: May need 100kHz initially");
     }
   }
-
-  Serial.println();
-
-  // Initialize VESCs
-  Serial.println("⚙️  Initializing VESC motor controllers...");
-  Serial1.begin(115200);
-  Serial2.begin(115200);
-  vescLeft.setSerialPort(&Serial1);
-  vescRight.setSerialPort(&Serial2);
-  Serial.println("   ✅ VESCs initialized");
   Serial.println();
 
   // Load saved settings (if available)
@@ -548,6 +605,7 @@ void setup() {
   Serial.println("w/W - Decrease/Increase velocity Kp");
   Serial.println("e/E - Decrease/Increase velocity Ki");
   Serial.println("r/R - Decrease/Increase velocity Kd");
+  Serial.println("n/N - Decrease/Increase IMU velocity scale (VEL_SCALE)");
   Serial.println();
   Serial.println("=== ANGLE PID TUNING ===");
   Serial.println("p/P - Decrease/Increase angle Kp");
@@ -573,7 +631,7 @@ void setup() {
   Serial.println("c/C - Clear log buffer");
   Serial.println("SPACE - Pause/Resume data stream");
   Serial.println();
-  Serial.println("Ready!");
+  Serial.println("Ready! Motors DISARMED — press 'o' to arm when robot is upright.");
 }
 
 void loop() {
@@ -593,11 +651,34 @@ void loop() {
   // Get IMU data with failure tracking
   bool imuDataReceived = false;
   if (imuWorking) {
+    if (bno08x.wasReset()) {
+      if (ignoreNextImuReset) {
+        Serial.println("\nℹ️  BNO085 startup reset acknowledged — re-enabling reports...");
+        ignoreNextImuReset = false;
+      } else {
+        Serial.println("\n⚠️  BNO085 SPONTANEOUS RESET DETECTED — re-enabling reports...");
+      }
+      if (recoverIMUReportsAfterSh2Reset()) {
+        Serial.println("   ✅ Reports re-enabled after reset");
+      } else {
+        Serial.println("   ❌ Failed to re-enable reports after reset");
+        imuWorking = false;
+      }
+      firstImuDataReceived = false;
+      firstImuDataTime = 0;
+      imuVelocity = 0.0f;
+      lastGyroMicros = 0;
+    }
+
     while (bno08x.getSensorEvent(&sensorValue)) {
       if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
         imuDataReceived = true;
         imuReadCount++;
         lastIMUUpdate = millis();
+        if (!firstImuDataReceived) {
+          firstImuDataReceived = true;
+          firstImuDataTime = millis();
+        }
 
         // Get quaternion
         float qw = sensorValue.un.rotationVector.real;
@@ -639,22 +720,41 @@ void loop() {
         // Gyro Y axis = pitch rate. Sign: positive = tilting forward.
         // IMU is mounted upside down, so negate to match roll orientation correction.
         gyroPitchRate = -sensorValue.un.gyroscope.y;
+
+        unsigned long nowGyroMicros = micros();
+        if (lastGyroMicros > 0) {
+          float dt = (nowGyroMicros - lastGyroMicros) / 1000000.0f;
+          if (dt > 0.0f && dt < 0.03f) {
+            float rollRad = roll * (PI / 180.0f);
+            imuVelocity += gyroPitchRate * WHEEL_RADIUS * velScale * cosf(rollRad) * dt;
+            imuVelocity *= (1.0f - VEL_DECAY);
+            imuVelocity = constrain(imuVelocity, -VELOCITY_MAX, VELOCITY_MAX);
+          }
+        }
+        lastGyroMicros = nowGyroMicros;
       }
     }
 
     if (!imuDataReceived) {
       imuFailCount++;
-      // Check if IMU has stopped responding (no data for >100ms at 400Hz)
-      if (lastIMUUpdate > 0 && (millis() - lastIMUUpdate > 100)) {
+
+      bool dataLost  = (lastIMUUpdate > 0) && (millis() - lastIMUUpdate > 100);
+      bool neverSent = (lastIMUUpdate == 0) && (millis() > 3000);
+
+      if (dataLost || neverSent) {
         static unsigned long lastIMUWarning = 0;
-        if (millis() - lastIMUWarning > 2000) {  // Warn every 2 seconds
-          Serial.printf("\n⚠️  IMU COMMUNICATION LOST! Last update: %lu ms ago\n", millis() - lastIMUUpdate);
+        if (millis() - lastIMUWarning > 2000) {
+          if (neverSent) {
+            Serial.printf("\n⚠️  IMU NEVER SENT DATA! Init looked OK but no rotation vectors after %lu ms\n", millis());
+            Serial.println("   Likely cause: I2C bus marginal — init ACKs but sensor can't sustain transfer");
+          } else {
+            Serial.printf("\n⚠️  IMU COMMUNICATION LOST! Last update: %lu ms ago\n", millis() - lastIMUUpdate);
+          }
           Serial.printf("   Read success: %lu, Read failures: %lu\n", imuReadCount, imuFailCount);
           Serial.println("   Possible causes: Loose wiring, I2C speed too high, weak pull-ups");
           printTuningValues();
           lastIMUWarning = millis();
-          
-          // Attempt I2C bus recovery
+
           static unsigned long lastRecoveryAttempt = 0;
           if (millis() - lastRecoveryAttempt > 5000) {
             Serial.println("   Attempting I2C bus recovery...");
@@ -788,7 +888,8 @@ void loop() {
   }
   
   // === CHANGED === Compute every loop so angleSetpoint is correct every cycle (not only every 50ms).
-  bool inDeadband = (fabs(velocitySetpoint) < 0.01f) && (fabs(filteredVelocity) < VELOCITY_DEADBAND);
+  float velocityFeedback = imuWorking ? constrain((float)imuVelocity, -2.0f, 2.0f) : 0.0f;
+  bool inDeadband = (fabs(velocitySetpoint) < 0.01f) && (fabs(velocityFeedback) < VELOCITY_DEADBAND);
   bool velocityOutputActive = velocityLoopActive && !inDeadband;
 
   // Guarantee angle setpoint: when velocity loop off or in deadband, exactly baseSetpoint (no creep).
@@ -823,7 +924,7 @@ void loop() {
         deadbandActive = false;
         velocityPID.SetMode(AUTOMATIC);
       }
-      velocityInput = constrain(filteredVelocity, -2.0, 2.0);
+      velocityInput = velocityFeedback;
       velocityPID.Compute();
       angleSetpointFromVel = constrain(angleSetpointFromVel, -VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
       float desiredChange = angleSetpointFromVel - lastAngleSetpointFromVel;
@@ -838,23 +939,23 @@ void loop() {
     velocityDebugCounter++;
     if (velocityDebugCounter >= 5) {
       velocityDebugCounter = 0;
-      float velocityError = velocitySetpoint - filteredVelocity;
-      Serial.printf("🔍 VEL: raw=%.3f filt=%.3f err=%.3f angleFromVel=%.4f° setpt=%.3f totalSetpt=%.2f° [Kp=%.3f Ki=%.0f]\n",
-                   avgVelocity, filteredVelocity, velocityError, angleSetpointFromVel,
-                   velocitySetpoint, baseSetpoint + angleSetpointFromVel, Kp_vel, Ki_vel);
+      float velocityError = velocitySetpoint - velocityFeedback;
+      Serial.printf("🔍 VEL: imu=%.3f vescRaw=%.3f vescFilt=%.3f err=%.3f angleFromVel=%.4f° setpt=%.3f totalSetpt=%.2f° scale=%.2f\n",
+                   velocityFeedback, avgVelocity, filteredVelocity, velocityError, angleSetpointFromVel,
+                   velocitySetpoint, baseSetpoint + angleSetpointFromVel, velScale);
     }
     static int signVerificationCounter = 0;
     signVerificationCounter++;
     if (signVerificationCounter >= 20) {
       signVerificationCounter = 0;
-      Serial.printf("✅ SIGN CHECK: setpt=%.3f m/s, filtVel=%.3f m/s, angleFromVel=%.4f° | Expected: +setpt with -vel → -angleFromVel (forward tilt)\n",
-                   velocitySetpoint, filteredVelocity, angleSetpointFromVel);
+      Serial.printf("✅ SIGN CHECK: setpt=%.3f m/s, imuVel=%.3f m/s, angleFromVel=%.4f° | Expected: +setpt with -vel → -angleFromVel (forward tilt)\n",
+                   velocitySetpoint, velocityFeedback, angleSetpointFromVel);
     }
   }
 
   if (imuWorking) {
-    // Safety check - disable motors if robot is too far tilted
-    bool isBalanceable = (abs(roll) < 25.0f);
+    bool imuSettled = firstImuDataReceived && (millis() - firstImuDataTime >= IMU_SETTLE_MS);
+    bool isBalanceable = imuSettled && (abs(roll) < 25.0f);
     safetyCutoffActive = !isBalanceable;
 
     if (!isBalanceable) {
@@ -867,7 +968,14 @@ void loop() {
 
       static unsigned long lastSafetyDebug = 0;
       if (millis() - lastSafetyDebug > 1000) {
-        Serial.printf("⚠️  SAFETY: Roll=%.2f° exceeds limit (25°) - Motors DISABLED\n", roll);
+        if (!imuSettled) {
+          Serial.printf("⏳ IMU settling... firstData=%s, elapsed=%lu ms (need %lu ms)\n",
+                       firstImuDataReceived ? "yes" : "no",
+                       firstImuDataReceived ? (millis() - firstImuDataTime) : 0UL,
+                       IMU_SETTLE_MS);
+        } else {
+          Serial.printf("⚠️  SAFETY: Roll=%.2f° exceeds limit (25°) - Motors DISABLED\n", roll);
+        }
         lastSafetyDebug = millis();
       }
     } else {
@@ -903,6 +1011,35 @@ void loop() {
     yawOutput = 0.0;
     angleSetpointFromVel = 0.0;
   }
+
+  // Dispatch motor commands from loop() only (never from ISR).
+  // This prevents serial/UART congestion and stream lockups when safety trips.
+  static unsigned long lastMotorCommandWrite = 0;
+  static bool forcedZeroSent = false;
+  bool pendingMotorCommand = false;
+  float pendingLeftCurrent = 0.0f;
+  float pendingRightCurrent = 0.0f;
+  noInterrupts();
+  if (motorCommandPending) {
+    pendingMotorCommand = true;
+    pendingLeftCurrent = leftMotorCurrent;
+    pendingRightCurrent = rightMotorCurrent;
+  }
+  interrupts();
+  if (pendingMotorCommand && (millis() - lastMotorCommandWrite >= MOTOR_COMMAND_UPDATE_INTERVAL_MS)) {
+    bool allowMotorOutput = imuWorking && !safetyCutoffActive && motorOutputEnabled;
+    if (allowMotorOutput) {
+      sendMotorCurrents(pendingLeftCurrent, pendingRightCurrent);
+      forcedZeroSent = false;
+    } else if (!forcedZeroSent) {
+      sendMotorCurrents(0.0f, 0.0f);
+      forcedZeroSent = true;
+    }
+    lastMotorCommandWrite = millis();
+    noInterrupts();
+    motorCommandPending = false;
+    interrupts();
+  }
   
   // Print status
   if (streamData && (millis() - lastPrint >= 50)) {
@@ -913,10 +1050,10 @@ void loop() {
       float yawError = yaw - yawSetpoint;
       const char* modeStr = (controlMode == MODE_DIAGNOSTIC) ? "DIAG" : "PID";
       // Log: Roll, Pitch, Yaw, RollError, YawError, Vel (filtered), RawVel (avg before filter), VelSetpt, VelPID_Out, RollPID_Out, YawPID_Out, LeftMotor, RightMotor, Setpoint, Mode, YawCtrl, Logging
-      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,RawVel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s\n",
+      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,RawVel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s,GyroRate:%.4f\n",
                    roll, pitch, yaw, angleError, yawError, filteredVelocity, avgVelocity, velocitySetpoint, angleSetpointFromVel,
                    motorCurrent, yawOutput, leftMotorCurrent, rightMotorCurrent, angleSetpoint,
-                   modeStr, yawControlEnabled ? "ON" : "OFF", loggingEnabled ? "ON" : "OFF");
+                   modeStr, yawControlEnabled ? "ON" : "OFF", loggingEnabled ? "ON" : "OFF", gyroPitchRate);
     } else {
       static unsigned long lastIMUWarning = 0;
       if (millis() - lastIMUWarning > 2000) {
@@ -1060,6 +1197,18 @@ void handleCommand(char cmd) {
     case 'R':
       // Kd tuning disabled - velocity loop is PI only
       Serial.println("Velocity Kd is always 0 (PI only controller)");
+      break;
+
+    case 'n':
+    case 'N':
+      if (cmd == 'n') {
+        velScale -= (fineAdjust ? VEL_SCALE_STEP_FINE : VEL_SCALE_STEP_COARSE);
+      } else {
+        velScale += (fineAdjust ? VEL_SCALE_STEP_FINE : VEL_SCALE_STEP_COARSE);
+      }
+      if (velScale < 0.1f) velScale = 0.1f;
+      if (velScale > 5.0f) velScale = 5.0f;
+      Serial.printf("VEL_SCALE = %.2f (%s)\n", velScale, (cmd == 'n') ? "decreased" : "increased");
       break;
     
     // ANGLE PID TUNING
@@ -1233,8 +1382,8 @@ void handleCommand(char cmd) {
       Serial.printf("Yaw Kd = %.3f (increased)\n", Kd_yaw);
       break;
     
-    case 'n':
-    case 'N':
+    case 'f':
+    case 'F':
       yawControlEnabled = !yawControlEnabled;
       Serial.printf("Yaw Control: %s\n", yawControlEnabled ? "ENABLED" : "DISABLED");
       break;
@@ -1290,9 +1439,11 @@ void printTuningValues() {
   Serial.printf("  useVelocityLoop: %s  (v to toggle, OFF = single-loop mode)\n", useVelocityLoop ? "ON" : "OFF");
   Serial.printf("  Motor Output: %s (o to toggle dry-run)\n", motorOutputEnabled ? "ENABLED" : "DISABLED");
   Serial.printf("  Velocity Kp: %.3f  Velocity Ki: %.3f  Velocity Kd: %.3f (always 0)\n", Kp_vel, Ki_vel, Kd_vel);
-  Serial.printf("  Velocity Setpoint: %.3f m/s  Filtered Velocity: %.3f m/s  Raw Velocity: %.3f m/s\n", velocitySetpoint, filteredVelocity, avgVelocity);
+  Serial.printf("  Velocity Setpoint: %.3f m/s  IMU Velocity: %.3f m/s  VESC Filt: %.3f m/s  VESC Raw: %.3f m/s\n",
+                velocitySetpoint, imuVelocity, filteredVelocity, avgVelocity);
   Serial.printf("  Velocity PID Output: %.3f° (angle offset, clamped to ±%.1f°, slew limited)\n", angleSetpointFromVel, VELOCITY_OUTPUT_MAX);
-  Serial.printf("  Velocity Deadband: ±%.3f m/s (when setpoint = 0)  Filter alpha: %.2f\n", VELOCITY_DEADBAND, VELOCITY_FILTER_ALPHA);
+  Serial.printf("  Velocity Deadband: ±%.3f m/s (IMU signal)  Filter alpha: %.2f  VEL_SCALE: %.2f\n",
+                VELOCITY_DEADBAND, VELOCITY_FILTER_ALPHA, velScale);
   Serial.println("ANGLE PID CONTROL (Inner Loop - Balance):");
   Serial.printf("  Angle Kp: %.2f  Angle Ki: %.2f  Angle Kd: %.3f\n", Kp, Ki, Kd);
   Serial.printf("  Angle Filter Alpha: %.2f (~%.0f Hz cutoff)\n", angleFilterAlpha, -logf(1.0f - angleFilterAlpha) / (2.0f * PI * (PID_SAMPLE_TIME_MS / 1000.0f)));
