@@ -96,3 +96,4 @@ Use the tuning GUI or serial commands so every run is captured in logs with `GAI
 ## Revision history
 
 - 2026-04-16: Initial roadmap from balance tuning session; proposed tasks 4-9–4-11 added to [tasks.md](./tasks.md).
+- 2026-04-16: Firmware `SETTINGS_MAGIC = 0xC45C4DF0` forces source defaults aligned with `robot_log_20260416_232745.txt` (`Kp=1.5`, `Kd=0.06`, `Setpt=-0.84`, `Filt=0.25`, `maxCurrent=2`).

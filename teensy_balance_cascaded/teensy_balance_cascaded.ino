@@ -94,7 +94,7 @@ bool velocityMaFilled = false;
 bool useVelocityLoop = false;  // Default false for testing; 'v' toggles. Match single-loop first.
 
 // ANGLE CONTROL LOOP (Inner Loop - from single-loop)
-double baseSetpoint = -1.60;  // Natural CG balance point from field log analysis (was -2.0); EEPROM overrides if saved
+double baseSetpoint = -0.84;  // Field-validated CG lean (robot_log_20260416_232745.txt); EEPROM overrides if saved
 volatile float angleSetpoint = 0.0f;   // Active setpoint = baseSetpoint + angleSetpointFromVel (or baseSetpoint when vel loop off)
 volatile float angleInput = 0.0f;      // Current roll angle (degrees)
 volatile float motorCurrent = 0.0f;    // PID output: motor current (Amps)
@@ -110,13 +110,13 @@ double pidAngleInput = 0.0;
 double pidMotorCurrent = 0.0;
 
 // Angle PID defaults tuned to match the filtered single-loop controller.
-double Kp = 5.0;    // Proportional gain (single-loop used 5.0; tune 4.5–6.0)
+double Kp = 1.5;    // Field default after PID latch fix (232745); tune on your floor
 double Ki = 0.0;    // Integral gain (start 0, add small later if needed)
-double Kd = 0.03;   // Lower starting Kd: raw 500 Hz angle data made 0.3 saturate constantly
+double Kd = 0.06;   // Field default with Filt=0.25; raise for more damping if pushes still ring
 
 // Angle input low-pass filter for derivative-noise suppression.
 // Alpha = 0.3 gives roughly a 24 Hz cutoff at the 500 Hz angle PID rate.
-float angleFilterAlpha = 0.15f;
+float angleFilterAlpha = 0.25f;  // Field default: less lag than 0.15 during pushes (232745)
 
 PID balancePID(&pidAngleInput, &pidMotorCurrent, &pidAngleSetpoint, Kp, Ki, Kd, DIRECT);
 
@@ -146,7 +146,7 @@ const float GEAR_RATIO = 1.0;        // Gear ratio (from VESC XML: gear_ratio=1,
 const float RPM_TO_MPS = (WHEEL_DIAMETER * PI) / 60.0;
 
 // Motor control parameters
-float maxCurrent = 5.0;  // Maximum motor current (Amps); safe authority without motor risk (was 6.5)
+float maxCurrent = 2.0f;  // Field default for low-traction / cardboard (232745); raise on grippy floor
 float minCurrent = 0.0;  // DEPRECATED: Use stiction compensation instead (kept for EEPROM compatibility)
 
 // Stiction (static friction) compensation
@@ -208,7 +208,7 @@ struct SavedSettings {
   bool yawControlEnabled;
   float angleFilterAlpha;
 };
-const uint32_t SETTINGS_MAGIC = 0xC45C4DEF;  // Bump forces source defaults: Kp=5.0, baseSetpoint=-1.60, maxCurrent=5.0, dither replaces stiction comp
+const uint32_t SETTINGS_MAGIC = 0xC45C4DF0;  // Bump forces proven defaults: Kp=1.5,Kd=0.06,base=-0.84,Filt=0.25,maxI=2.0 + 4-8 rearm/dither/GAINS line
 
 bool loadSettings();
 void saveSettings();
@@ -1668,7 +1668,7 @@ bool loadSettings() {
     Kd_yaw = 0.0;
   }
   if (isnan(angleFilterAlpha) || isinf(angleFilterAlpha) || angleFilterAlpha < 0.0f || angleFilterAlpha > 1.0f) {
-    angleFilterAlpha = 0.15f;
+    angleFilterAlpha = 0.25f;
   }
   
   velocityPID.SetTunings(Kp_vel, Ki_vel, Kd_vel);
