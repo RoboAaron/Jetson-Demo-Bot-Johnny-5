@@ -314,6 +314,34 @@ void sendMotorCurrents(float leftA, float rightA) {
   }
 }
 
+// === PID state-reset helpers (4-8) ===
+// PID_v1.Initialize() snapshots *myOutput into outputSum on every
+// MANUAL -> AUTOMATIC transition. With Ki=0 and P_ON_E, outputSum is
+// never updated inside Compute(), so any non-zero value latched at
+// Initialize() becomes a permanent DC bias on the output until another
+// mode transition. These helpers zero the output double *before*
+// SetMode(AUTOMATIC) so Initialize() always snapshots a clean zero.
+// They also snap the input pointer to the current live value so the
+// first post-rearm Compute() sees dInput == 0 (no spurious D kick).
+static inline void rearmBalancePID() {
+  pidMotorCurrent = 0.0;
+  pidAngleInput = angleInput;
+  pidAngleSetpoint = angleSetpoint;
+  balancePID.SetMode(AUTOMATIC);
+}
+
+static inline void rearmVelocityPID() {
+  angleSetpointFromVel = 0.0;
+  lastAngleSetpointFromVel = 0.0f;
+  velocityPID.SetMode(AUTOMATIC);
+}
+
+static inline void rearmYawPID() {
+  yawOutput = 0.0;
+  yawSetpoint = yaw;  // hold current yaw as new target after rearm
+  yawPID.SetMode(AUTOMATIC);
+}
+
 void runAngleControlISR() {
   if (!imuWorking || safetyCutoffActive) {
     if (!pidFrozen) {
@@ -321,6 +349,7 @@ void runAngleControlISR() {
       pidFrozen = true;
     }
     motorCurrent = 0.0f;
+    pidMotorCurrent = 0.0;  // belt-and-braces: keep PID output double clean
     leftMotorCurrent = 0.0f;
     rightMotorCurrent = 0.0f;
     motorCommandPending = true;
@@ -328,7 +357,7 @@ void runAngleControlISR() {
   }
 
   if (pidFrozen) {
-    balancePID.SetMode(AUTOMATIC);
+    rearmBalancePID();
     pidFrozen = false;
   }
 
@@ -552,25 +581,25 @@ void setup() {
 
   // Initialize angle PID controller (inner loop - fast)
   Serial.println("🎛️  Initializing PID controllers...");
-  balancePID.SetMode(AUTOMATIC);
   balancePID.SetOutputLimits(-maxCurrent, maxCurrent);
   balancePID.SetSampleTime(PID_SAMPLE_TIME_MS);  // 500Hz update rate
+  rearmBalancePID();  // Clean initial Initialize() (see 4-8 state-reset helpers)
 
   // === CHANGED === Velocity PID: start in MANUAL when velocity loop disabled (useVelocityLoop false).
+  velocityPID.SetOutputLimits(-VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
+  velocityPID.SetSampleTime(VELOCITY_PID_SAMPLE_TIME_MS);
   if (useVelocityLoop && !FORCE_SINGLE_LOOP_MODE) {
-    velocityPID.SetMode(AUTOMATIC);
+    rearmVelocityPID();
   } else {
     velocityPID.SetMode(MANUAL);
     angleSetpointFromVel = 0.0;
     lastAngleSetpointFromVel = 0.0;
   }
-  velocityPID.SetOutputLimits(-VELOCITY_OUTPUT_MAX, VELOCITY_OUTPUT_MAX);
-  velocityPID.SetSampleTime(VELOCITY_PID_SAMPLE_TIME_MS);
 
   // Initialize yaw PID controller
-  yawPID.SetMode(AUTOMATIC);
   yawPID.SetOutputLimits(-maxCurrent, maxCurrent);
   yawPID.SetSampleTime(PID_SAMPLE_TIME_MS);  // 500Hz update rate
+  rearmYawPID();
 
   Serial.printf("   ✅ Angle PID: %d Hz update rate\n", 1000 / PID_SAMPLE_TIME_MS);
   Serial.printf("   ✅ Velocity PID: %d Hz update rate\n", 1000 / VELOCITY_PID_SAMPLE_TIME_MS);
@@ -939,7 +968,7 @@ void loop() {
       // useVelocityLoop true and not in deadband: run velocity PID
       if (deadbandActive) {
         deadbandActive = false;
-        velocityPID.SetMode(AUTOMATIC);
+        rearmVelocityPID();
       }
       velocityInput = velocityFeedback;
       velocityPID.Compute();
@@ -979,9 +1008,11 @@ void loop() {
       velocityPID.SetMode(MANUAL);
       yawPID.SetMode(MANUAL);
       motorCurrent = 0.0f;
+      pidMotorCurrent = 0.0;  // keep PID output double clean for next rearm (4-8)
       leftMotorCurrent = 0.0f;
       rightMotorCurrent = 0.0f;
       angleSetpointFromVel = 0.0;  // Reset velocity PID output
+      yawOutput = 0.0;             // keep yaw PID output double clean for next rearm (4-8)
 
       static unsigned long lastSafetyDebug = 0;
       if (millis() - lastSafetyDebug > 1000) {
@@ -996,8 +1027,8 @@ void loop() {
         lastSafetyDebug = millis();
       }
     } else {
-      if (velocityLoopActive && !FORCE_SINGLE_LOOP_MODE) velocityPID.SetMode(AUTOMATIC);
-      yawPID.SetMode(AUTOMATIC);
+      if (velocityLoopActive && !FORCE_SINGLE_LOOP_MODE) rearmVelocityPID();
+      rearmYawPID();
 
       // === CHANGED === Rich debug every 100 ms when logging enabled (angleInput, setpoint, vel, deadband, useVelocityLoop, current).
       static unsigned long lastDebug = 0;
@@ -1023,6 +1054,7 @@ void loop() {
     // IMU not working - ISR will hold motors at zero.
     safetyCutoffActive = true;
     motorCurrent = 0.0f;
+    pidMotorCurrent = 0.0;  // keep PID output double clean for next rearm (4-8)
     leftMotorCurrent = 0.0f;
     rightMotorCurrent = 0.0f;
     yawOutput = 0.0;
@@ -1066,9 +1098,10 @@ void loop() {
       float angleError = roll - angleSetpoint;
       float yawError = yaw - yawSetpoint;
       const char* modeStr = (controlMode == MODE_DIAGNOSTIC) ? "DIAG" : "PID";
-      // Log: Roll, Pitch, Yaw, RollError, YawError, Vel (filtered), RawVel (avg before filter), VelSetpt, VelPID_Out, RollPID_Out, YawPID_Out, LeftMotor, RightMotor, Setpoint, Mode, YawCtrl, Logging
-      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,RawVel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s,GyroRate:%.4f\n",
-                   roll, pitch, yaw, angleError, yawError, filteredVelocity, avgVelocity, velocitySetpoint, angleSetpointFromVel,
+      // Log: Roll, Pitch, Yaw, AngleInput (EMA-filtered roll fed to balancePID), RollError, YawError, Vel (filtered), RawVel (avg before filter), VelSetpt, VelPID_Out, RollPID_Out, YawPID_Out, LeftMotor, RightMotor, Setpoint, Mode, YawCtrl, Logging, GyroRate
+      // AI: added in 4-8 so filter-vs-raw divergence is visible without a reflash.
+      Serial.printf("R:%.2f,P:%.2f,Y:%.2f,AI:%.2f,Err:%.2f,YawErr:%.2f,Vel:%.3f,RawVel:%.3f,VelSet:%.3f,VelPID:%.3f,RollOut:%.2f,YawOut:%.2f,Left:%.2f,Right:%.2f,Setpt:%.2f,Mode:%s,Yaw:%s,Log:%s,GyroRate:%.4f\n",
+                   roll, pitch, yaw, angleInput, angleError, yawError, filteredVelocity, avgVelocity, velocitySetpoint, angleSetpointFromVel,
                    motorCurrent, yawOutput, leftMotorCurrent, rightMotorCurrent, angleSetpoint,
                    modeStr, yawControlEnabled ? "ON" : "OFF", loggingEnabled ? "ON" : "OFF", gyroPitchRate);
 
@@ -1166,7 +1199,7 @@ void handleCommand(char cmd) {
       } else {
         useVelocityLoop = !useVelocityLoop;
         if (useVelocityLoop) {
-          velocityPID.SetMode(AUTOMATIC);
+          rearmVelocityPID();
           Serial.println("Velocity loop ENABLED");
         } else {
           velocityPID.SetMode(MANUAL);
