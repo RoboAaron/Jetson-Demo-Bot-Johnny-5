@@ -94,7 +94,7 @@ bool velocityMaFilled = false;
 bool useVelocityLoop = false;  // Default false for testing; 'v' toggles. Match single-loop first.
 
 // ANGLE CONTROL LOOP (Inner Loop - from single-loop)
-double baseSetpoint = -0.70;  // Base balance angle (degrees) - from LAST_WORKING_CONFIG.md
+double baseSetpoint = -1.60;  // Natural CG balance point from field log analysis (was -2.0); EEPROM overrides if saved
 volatile float angleSetpoint = 0.0f;   // Active setpoint = baseSetpoint + angleSetpointFromVel (or baseSetpoint when vel loop off)
 volatile float angleInput = 0.0f;      // Current roll angle (degrees)
 volatile float motorCurrent = 0.0f;    // PID output: motor current (Amps)
@@ -146,7 +146,7 @@ const float GEAR_RATIO = 1.0;        // Gear ratio (from VESC XML: gear_ratio=1,
 const float RPM_TO_MPS = (WHEEL_DIAMETER * PI) / 60.0;
 
 // Motor control parameters
-float maxCurrent = 6.5;  // Maximum motor current (Amps) - from LAST_WORKING_CONFIG.md
+float maxCurrent = 5.0;  // Maximum motor current (Amps); safe authority without motor risk (was 6.5)
 float minCurrent = 0.0;  // DEPRECATED: Use stiction compensation instead (kept for EEPROM compatibility)
 
 // Stiction (static friction) compensation
@@ -208,7 +208,7 @@ struct SavedSettings {
   bool yawControlEnabled;
   float angleFilterAlpha;
 };
-const uint32_t SETTINGS_MAGIC = 0xC45C4DEE;  // Bump to add angleFilterAlpha and reset unstable defaults
+const uint32_t SETTINGS_MAGIC = 0xC45C4DEF;  // Bump forces source defaults: Kp=5.0, baseSetpoint=-1.60, maxCurrent=5.0, dither replaces stiction comp
 
 bool loadSettings();
 void saveSettings();
@@ -285,19 +285,18 @@ int logIndex = 0;
 bool bufferFull = false;
 bool logBufferFullNotified = false;
 
-// Stiction compensation: smooth linear mapping to avoid limit-cycle at zero-crossing.
-// - If command is essentially zero (< DRIVE_ZERO_EPS), return 0 (true zero stays zero)
-// - Otherwise map [0, maxCurrent] -> [MIN_DRIVE_CURRENT, maxCurrent] to avoid hard step
-float applyStictionComp(float cmdA) {
-  if (fabs(cmdA) < DRIVE_ZERO_EPS) return 0.0f;
+// Anti-stiction dither: add a small zero-mean sinusoidal current so the motor
+// never sits at exactly zero. Replaces the old piecewise stiction comp which
+// created a 0.55 A step at zero-crossing and produced a limit cycle.
+// Zero DC bias, no discontinuity, no reliance on knowing the exact stiction
+// breakaway current (which varies with motor temperature and wear).
+static const float DITHER_AMPLITUDE = 0.08f;   // Peak dither current (Amps)
+static const float DITHER_FREQ_HZ   = 40.0f;   // Dither frequency (Hz); no gearbox, so resonance is not a concern
 
-  float s = (cmdA > 0) ? 1.0f : -1.0f;
-  float mag = fabs(cmdA);
-
-  // Smooth linear mapping: scale the range [0, maxCurrent] to [MIN_DRIVE_CURRENT, maxCurrent]
-  float mapped = MIN_DRIVE_CURRENT + (mag * (maxCurrent - MIN_DRIVE_CURRENT) / maxCurrent);
-
-  return s * mapped;
+float applyDither(float cmdA) {
+  float t_sec = micros() * 1.0e-6f;
+  float dither = DITHER_AMPLITUDE * sinf(2.0f * PI * DITHER_FREQ_HZ * t_sec);
+  return cmdA + dither;
 }
 
 // Send current commands unless dry-run mode is active.
@@ -377,8 +376,8 @@ void runAngleControlISR() {
     if (fabs(leftCmd) < PARITY_MIN_CURRENT) leftCmd = 0.0f;
     if (fabs(rightCmd) < PARITY_MIN_CURRENT) rightCmd = 0.0f;
   } else {
-    leftCmd = applyStictionComp(leftCmd);
-    rightCmd = applyStictionComp(rightCmd);
+    leftCmd = applyDither(leftCmd);
+    rightCmd = applyDither(rightCmd);
   }
 
   leftMotorCurrent = constrain(leftCmd, -maxCurrent, maxCurrent);
@@ -525,6 +524,7 @@ void setup() {
     Serial.println("💾 Loaded saved settings from EEPROM");
   } else {
     Serial.println("💾 No saved settings found (using defaults)");
+    Serial.println("⚠️  EEPROM INVALID — running from SOURCE DEFAULTS. Press 'k' to save once tuned.");
   }
   if (FORCE_SINGLE_LOOP_MODE) {
     useVelocityLoop = false;
@@ -640,6 +640,8 @@ void loop() {
   static unsigned long imuReadCount = 0;
   static unsigned long imuFailCount = 0;
   static unsigned long lastIMUStats = 0;
+  static unsigned long prevIMUReadCount = 0;
+  static unsigned long prevIMUStatsTime = 0;
   
   // Handle serial commands (process ALL available commands to prevent buffer overflow)
   while (Serial.available()) {
@@ -750,7 +752,8 @@ void loop() {
           } else {
             Serial.printf("\n⚠️  IMU COMMUNICATION LOST! Last update: %lu ms ago\n", millis() - lastIMUUpdate);
           }
-          Serial.printf("   Read success: %lu, Read failures: %lu\n", imuReadCount, imuFailCount);
+          Serial.printf("   Rotation-vector events: %lu, Loop passes without new event: %lu\n", imuReadCount, imuFailCount);
+          Serial.println("   Note: 'without new event' is a loop-level metric, not direct I2C transaction failures.");
           Serial.println("   Possible causes: Loose wiring, I2C speed too high, weak pull-ups");
           printTuningValues();
           lastIMUWarning = millis();
@@ -770,10 +773,22 @@ void loop() {
     
     // Print I2C statistics every 5 seconds
     if (millis() - lastIMUStats > 5000) {
-      unsigned long totalReads = imuReadCount + imuFailCount;
-      float successRate = (totalReads > 0) ? (100.0f * imuReadCount / totalReads) : 0.0f;
-      Serial.printf("📊 I2C Stats: Success=%lu (%.1f%%), Fail=%lu, Total=%lu\n", 
-                    imuReadCount, successRate, imuFailCount, totalReads);
+      unsigned long nowMs = millis();
+      unsigned long totalLoops = imuReadCount + imuFailCount;
+      float loopHitRate = (totalLoops > 0) ? (100.0f * imuReadCount / totalLoops) : 0.0f;
+      unsigned long deltaEvents = imuReadCount - prevIMUReadCount;
+      unsigned long deltaMs = (prevIMUStatsTime > 0) ? (nowMs - prevIMUStatsTime) : 0;
+      float eventRateHz = (deltaMs > 0) ? (1000.0f * deltaEvents / deltaMs) : 0.0f;
+
+      if (lastIMUUpdate > 0) {
+        Serial.printf("📊 IMU Stats: RV events=%lu (+%lu, %.1f Hz), Last update=%lu ms ago\n",
+                      imuReadCount, deltaEvents, eventRateHz, nowMs - lastIMUUpdate);
+      } else {
+        Serial.printf("📊 IMU Stats: RV events=%lu (+%lu, %.1f Hz), Last update=never\n",
+                      imuReadCount, deltaEvents, eventRateHz);
+      }
+      Serial.printf("📊 IMU Loop Metric: no-new-event loops=%lu (hit=%.1f%%, diagnostic only)\n",
+                    imuFailCount, loopHitRate);
       
       if (BYPASS_VESC_FEEDBACK_WHEN_VEL_OFF && !velocityLoopActive) {
         Serial.println("📊 VESC Stats: Feedback bypassed (velocity loop OFF)");
@@ -797,6 +812,8 @@ void loop() {
         }
       }
       
+      prevIMUReadCount = imuReadCount;
+      prevIMUStatsTime = nowMs;
       lastIMUStats = millis();
     }
   }
@@ -1054,6 +1071,15 @@ void loop() {
                    roll, pitch, yaw, angleError, yawError, filteredVelocity, avgVelocity, velocitySetpoint, angleSetpointFromVel,
                    motorCurrent, yawOutput, leftMotorCurrent, rightMotorCurrent, angleSetpoint,
                    modeStr, yawControlEnabled ? "ON" : "OFF", loggingEnabled ? "ON" : "OFF", gyroPitchRate);
+
+      // Effective gains line once per second so every captured log is self-documenting.
+      static unsigned long lastGainsPrint = 0;
+      if (millis() - lastGainsPrint >= 1000) {
+        lastGainsPrint = millis();
+        Serial.printf("GAINS:Kp=%.2f,Ki=%.2f,Kd=%.3f,Setpt=%.2f,MaxI=%.1f,Filt=%.2f,VelLoop=%d,Dither=%.2f@%.0fHz\n",
+                      Kp, Ki, Kd, baseSetpoint, maxCurrent, angleFilterAlpha,
+                      useVelocityLoop ? 1 : 0, DITHER_AMPLITUDE, DITHER_FREQ_HZ);
+      }
     } else {
       static unsigned long lastIMUWarning = 0;
       if (millis() - lastIMUWarning > 2000) {
@@ -1454,7 +1480,7 @@ void printTuningValues() {
   Serial.printf("  Yaw Setpoint: %.2f°  Yaw Control: %s\n", yawSetpoint, yawControlEnabled ? "ENABLED" : "DISABLED");
   Serial.println("MOTOR CONTROL:");
   Serial.printf("  Max Current: %.2fA\n", maxCurrent);
-  Serial.printf("  Stiction Compensation: %.2fA (breakaway threshold)\n", MIN_DRIVE_CURRENT);
+  Serial.printf("  Dither: ±%.2fA @ %.0f Hz (anti-stiction, zero-mean)\n", DITHER_AMPLITUDE, DITHER_FREQ_HZ);
   Serial.printf("  Motor Direction Signs: Left=%.1f, Right=%.1f\n", LEFT_MOTOR_DIRECTION_SIGN, RIGHT_MOTOR_DIRECTION_SIGN);
   Serial.printf("  Velocity Signs: Left=%.1f, Right=%.1f\n", LEFT_VELOCITY_SIGN, RIGHT_VELOCITY_SIGN);
   Serial.println("SYSTEM CONFIG:");
