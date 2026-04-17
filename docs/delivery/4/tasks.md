@@ -16,9 +16,15 @@ This document lists all tasks associated with PBI 4.
 | 4-6 | [Comprehensive Testing and Validation](./4-6.md) | Proposed | Test across all scenarios (smooth floor, uneven surfaces, inclines, disturbances) to achieve 99%+ reliability. |
 | 4-7 | [Balance Recovery — EEPROM Reset, Dither, Gain Logging](./4-7.md) | Done | Force source defaults via SETTINGS_MAGIC bump, replace piecewise stiction comp with zero-mean 40 Hz dither, and add per-second effective-gains line to the serial stream. |
 | 4-8 | [PID State Reset on Safety Transitions + PID Logic Validation](./4-8.md) | InProgress | Fix `PID_v1.Initialize()` DC-bias latching on every `MANUAL→AUTOMATIC` transition across all three PIDs, audit sign/clamp/filter paths, and expose `angleInput` in the stream for filter-vs-raw diagnosis. |
+| 4-9 | [Angle Loop — Gyro-Rate D-Term (Low-Lag Damping)](./4-9.md) | Proposed | Add gyro-based derivative for inner angle loop to cut filter lag on aggressive pushes; document axis/sign and avoid double D with `PID_v1`. |
+| 4-10 | [Traction Surface Retune + Optional Plant ID](./4-10.md) | Proposed | Re-tune on non-cardboard floor; optional step-response logs for current vs wheel acceleration / authority limits. |
+| 4-11 | [Tuning GUI — Performance and Responsiveness](./4-11.md) | Proposed | Fix multi-second GUI lag: cap plot history, decimate display, prevent serial read backlog. |
 | 4-E2E | [E2E CoS Test](./4-E2E.md) | Proposed | Holistic verification of all PBI 4 CoS (99%+ reliability across all test scenarios). |
+
+**Roadmap (phases A–F)**: [Balance tuning roadmap](./BALANCE_TUNING_ROADMAP.md)
 
 History:
 - 2026-01-26: Task index created by AI_Agent based on current implementation status.
 - 2026-04-16: 4-2 moved InProgress → Review (velocity sign/deadband/input-clamping + BNO085 reboot recovery complete). 4-7 added as InProgress for inner-loop EEPROM-gain-shadow + stiction-comp limit-cycle + log self-documentation fixes per expert evaluation of `tuning_code/logs/robot_log_20260415_222218.txt`.
 - 2026-04-16: 4-7 moved InProgress → Done (all six requirements verified against field log `robot_log_20260416_223241.txt`). 4-8 added as InProgress for the `PID_v1.Initialize()` DC-bias latching bug discovered during 4-7 verification — stand-test screenshot showed `RollOut` pinned at `+maxCurrent` for > 10 minutes at near-zero error, traced to `outputSum = *myOutput` snapshot at every `MANUAL→AUTOMATIC` transition with `Ki=0, P_ON_E` making it a permanent DC bias.
+- 2026-04-16: Added [BALANCE_TUNING_ROADMAP.md](./BALANCE_TUNING_ROADMAP.md) (phases A–F + CLI tuning procedure). Logged proposed tasks **4-9** (gyro-rate D-term), **4-10** (surface retune / plant ID), **4-11** (GUI performance). Compared field logs `robot_log_20260416_231027.txt` vs `robot_log_20260416_232745.txt` after operator applied `Setpt=-0.84`, `Filt=0.25`, `Kd=0.06` — latter shows shorter saturation bursts and calmer post-disturbance tail; see roadmap table.
