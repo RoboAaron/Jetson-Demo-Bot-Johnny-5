@@ -40,5 +40,14 @@ _Last updated: 2025-09-03_
 - Twidec 110-pc Battery Cable Ends (copper ring terminals + heat shrink) — **$5.41** (#111-7623499-062665)
 - 10 AWG Silicone Wire 2-core (20 ft: 10ft red + 10ft black) — **$14.19** (#111-7623499-062665)
 
+## Replacement / Protection (pending purchase)
+_See [docs/hardware/recovery_wiring_guide.md](docs/hardware/recovery_wiring_guide.md) Section 2 for details._
+
+- PJRC Teensy 4.1 (replacement) — **~$32–38**
+- Teyleten Robot GY-BNO085 IMU (spare, if existing is damaged) — **~$20**
+- TVS diode arrays (PRTR5V0U2X), ferrite beads, decoupling caps — **~$10**
+- JST-PH 2.0 mm pre-crimped pigtails — **~$5–10**
+
 ---
 **Grand Total Spent:** **$1023.01** (tax + shipping included; gift cards counted as cash)
+**Pending replacement parts:** **~$67–78** (estimated)

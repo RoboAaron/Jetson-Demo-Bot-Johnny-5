@@ -1,138 +1,77 @@
 # Jetson Demo Bot - Johnny 5
 
-A self-balancing robot built with NVIDIA Jetson and Teensy 4.1, featuring autonomous navigation, manual control, and real-time balance control.
+Self-balancing robot platform using a Teensy 4.1 for real-time control and Jetson for higher-level features.
 
-## 🤖 System Overview
+## System Overview
 
-### Hardware Architecture
-- **Jetson Nano/Orin**: High-level control, navigation, computer vision
-- **Teensy 4.1**: Real-time balance control, motor control, sensor fusion
-- **BNO085 IMU**: 9-DOF orientation sensing for balance control
-- **Dual FSESC Motor Controllers**: Hoverboard hub motor control via UART
-- **LiDAR**: LDROBOT STL-19P for SLAM and navigation
-- **PS3 Controller**: Manual remote control capability
+### Hardware
 
-### Communication Architecture
-- **Jetson ↔ Teensy**: USB Serial (2Mbaud) - Power + Data in one cable
-- **Teensy ↔ ESCs**: UART (115200 baud) - Motor current commands
-- **Teensy ↔ IMU**: I2C - Real-time orientation data
-- **Teensy ↔ PS3**: USB Host - Wireless gamepad input
+- Jetson (Nano/Orin): higher-level compute, ROS2 stack, integration tooling
+- Teensy 4.1: hard real-time balance and motor control loops
+- BNO085 IMU: fused orientation + gyro data
+- Dual FSESC motor controllers: current control over UART
+- LDROBOT LiDAR: mapping/navigation integration path
 
-## 🚀 Quick Start
+### Communication
 
-### Development Mode (Laptop Connected)
+- Jetson <-> Teensy: USB serial at 2,000,000 baud
+- Teensy <-> ESCs: UART at 115200 baud
+- Teensy <-> IMU: I2C
+
+## Current Control Status
+
+- The active balance firmware is `teensy_balance_cascaded/teensy_balance_cascaded.ino`.
+- Balance loop behavior is now stable after:
+  - BNO085 reset recovery fixes (`wasReset()` report re-enable sequence)
+  - PID state-reset fix for `PID_v1` MANUAL->AUTOMATIC transitions
+  - dither-based low-speed drive assist replacing step-style stiction compensation
+  - field-tuned defaults + settings version bump (`SETTINGS_MAGIC`)
+- Current focus is to build velocity/position features on top of the stable balance loop.
+
+## Quick Start
+
+### Flash Teensy firmware (Linux)
+
 ```bash
-# Program Teensy balance controller
-cd teensy_balance_controller
+cd teensy_balance_cascaded
 arduino-cli compile --fqbn teensy:avr:teensy41 .
-teensy_loader_cli --mcu=TEENSY41 -w -v teensy_balance_controller.ino.hex
-
-# Monitor balance controller
-minicom -b 2000000 -D /dev/ttyACM0
+teensy_loader_cli --mcu=TEENSY41 -w -v teensy_balance_cascaded.ino.hex
 ```
 
-### Production Mode (Jetson Connected)
+### Run tuning GUI
+
 ```bash
-# Test Jetson-Teensy interface
-python3 test_jetson_interface.py
-
-# Run robot control
-python3 robot_main.py
+python3 tuning_code/robot_tuning_gui.py
 ```
 
-**⚠️ Important**: Only ONE device can connect to Teensy USB at a time (laptop OR Jetson, not both).
+Important: only one host can own the Teensy USB connection at a time (Jetson or development laptop).
 
-## 📁 Project Structure
+## Repository Layout
 
-```
-├── teensy_balance_controller/          # Core balance control firmware
-├── ldrobot_lidar_ros2/                # LiDAR integration and SLAM
-├── docs/
-│   ├── delivery/                      # Project management and tasks
-│   ├── deployment/                    # Deployment guides
-│   └── setup/                         # Development environment setup
-├── test_jetson_interface.py           # Jetson-Teensy communication test
-└── robotics_*.md                      # Design documentation
-```
-
-## 🔧 Development Setup
-
-### Prerequisites
-- **Arduino IDE 2.3.3+** with **Teensyduino 1.59+**
-- **Python 3.8+** with `pyserial`
-- **ROS2 Humble** (for navigation stack)
-
-### Quick Setup
-```bash
-# Ubuntu/Jetson setup
-./setup_ubuntu_dev.md
-
-# Windows setup  
-./setup_windows_dev.bat
-
-# Teensy development environment
-./docs/setup/setup_teensy_dev.md
+```text
+teensy_balance_cascaded/        Active balance firmware
+tuning_code/                    GUI + comms + log evaluation tools
+ldrobot_lidar_ros2/             LiDAR setup and ROS2 launch/config scripts
+firmware/                       Firmware design docs and patch artifacts
+docs/delivery/                  Backlog, PBI/task tracking, implementation records
+docs/hardware/                  Wiring and hardware integration notes
+docs/setup/                     Setup/config guides
 ```
 
-## 🎯 Current Status
+## Setup Entry Points
 
-### ✅ Completed Features
-- **Balance Control**: BNO085 IMU + PID → ESC current control
-- **Jetson Interface**: USB serial protocol for bidirectional communication  
-- **Real-time Control**: 100Hz balance loop with sensor fusion
-- **Development Tools**: CLI compilation, upload, and testing workflows
+- Jetson/Linux setup guide: `setup_ubuntu_dev.md`
+- Windows host setup script: `setup_windows_dev.bat`
+- FSESC setup notes: `docs/setup/setup_fsesc_config.md`
+- Hardware direction map: `docs/hardware/motor_direction_configuration.md`
 
-### 🚧 In Progress
-- PS3 remote control integration
-- Jetson velocity/steering command processing
-- Mode blending (balance + navigation + manual)
+## Planning and Design Docs
 
-### 📋 Planned Features
-- ROS2 navigation stack integration
-- Computer vision for obstacle avoidance
-- Web interface for monitoring and control
-- Autonomous waypoint navigation
+- Backlog (source of truth): `docs/delivery/backlog.md`
+- PBI-4 balance work: `docs/delivery/4/prd.md`
+- Task index for PBI-4: `docs/delivery/4/tasks.md`
+- Balance roadmap: `docs/delivery/4/BALANCE_TUNING_ROADMAP.md`
 
-## 🔌 Hardware Connections
+## Branching Note
 
-### Power Distribution
-- **Main Power**: 24V battery → FSESC controllers
-- **Teensy Power**: 5V from Jetson USB connection
-- **Jetson Power**: 5V/4A barrel jack or USB-C
-
-### Signal Connections
-- **Teensy Pin 18 (SDA)** → BNO085 SDA
-- **Teensy Pin 19 (SCL)** → BNO085 SCL  
-- **Teensy Serial1** → Left ESC UART
-- **Teensy Serial2** → Right ESC UART
-- **Teensy USB** → Jetson USB (power + data)
-
-## 📊 Performance Specifications
-- **Balance Control**: 100Hz PID loop, ±15A current range
-- **IMU Data Rate**: 100Hz rotation vector, <10ms latency
-- **Jetson Communication**: 2Mbaud, 20Hz IMU data, 10Hz status
-- **Motor Control**: UART at 115200 baud to dual ESCs
-
-## 📖 Documentation
-
-- **[Setup Guide](docs/setup/setup_teensy_dev.md)**: Development environment
-- **[Deployment Guide](docs/deployment/teensy_jetson_deployment.md)**: Production deployment
-- **[Design Methodology](robotics_design_methodology.md)**: System architecture
-- **[Project Overview](robotics_project_overview.md)**: Hardware and software overview
-
-## 🤝 Contributing
-
-This project follows a structured development methodology with:
-- **Product Backlog Items (PBIs)** for feature planning
-- **Task-based development** with clear acceptance criteria
-- **Git workflow** with task-specific commits and PRs
-
-See `docs/delivery/backlog.md` for current development status.
-
-## 📄 License
-
-Open source hardware and software project. See individual component licenses for details.
-
----
-
-**Johnny 5 is alive!** 🤖⚡
+`main` is the consolidated source of truth for current design and implementation. The `v0.1-balance-working` tag marks the milestone where the balance loop reached stable field behavior.
