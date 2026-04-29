@@ -93,6 +93,7 @@ class SerialReader:
             'drive_offset': 0.0,
             # Velocity control (Phase 1)
             'velocity_setpoint': 0.0,  # Target velocity in m/s
+            'vel_scale': 1.0,          # IMU velocity estimator scale (n/N)
             'use_vel_loop': False,   # Velocity loop ON/OFF (cascaded mode)
             'motor_output_enabled': True,  # Dry-run motor output state (o toggle)
             'fine_adjust': False   # When True, Kd and other params use smaller steps (e.g. Kd step 0.002)
@@ -464,8 +465,10 @@ class SerialReader:
             'w': 'Decrease Velocity Kp', 'W': 'Increase Velocity Kp',
             'e': 'Decrease Velocity Ki', 'E': 'Increase Velocity Ki',
             'r': 'Velocity Kd (disabled - PI only)', 'R': 'Velocity Kd (disabled - PI only)',
+            'n': 'Decrease VEL_SCALE', 'N': 'Increase VEL_SCALE',
             # Motor settings
             'm': 'Decrease Max Current', 'M': 'Increase Max Current',
+            'q': 'Decrease Min Current', 'Q': 'Increase Min Current',
             'z': 'Decrease Angle Setpoint', 'Z': 'Increase Angle Setpoint',
             # Save/Load Settings
             'k': 'Save Settings', 'K': 'Save Settings',
@@ -474,19 +477,18 @@ class SerialReader:
             'y': 'Decrease Yaw Kp', 'Y': 'Increase Yaw Kp',
             'u': 'Decrease Yaw Ki', 'U': 'Increase Yaw Ki',
             'h': 'Decrease Yaw Kd', 'H': 'Increase Yaw Kd',
-            'n': 'Toggle Yaw Control', 'N': 'Toggle Yaw Control',
+            'f': 'Toggle Yaw Control', 'F': 'Toggle Yaw Control',
             # Other controls
             'd': 'Toggle Diagnostic Mode',
             'o': 'Toggle Motor Output (dry-run)', 'O': 'Toggle Motor Output (dry-run)',
             't': 'Toggle Fine Adjust', 'T': 'Toggle Fine Adjust',
             'x': 'Show All Tuning Values', 'X': 'Show All Tuning Values',
+            '@': 'Sync GUI with firmware parameters',
             ' ': 'Toggle Data Stream',
             'l': 'Start Logging', 'L': 'Start Logging',
             's': 'Stop Logging', 'S': 'Stop Logging',
             'b': 'Download Log Data', 'B': 'Download Log Data',  # When logging enabled (changed from w/W to avoid conflict)
             'c': 'Clear Log Buffer', 'C': 'Clear Log Buffer',
-            # Min current (deadzone) control
-            'q': 'Decrease Min Current', 'Q': 'Increase Min Current',
         }
         return cmd_names.get(cmd, f"Unknown command: '{cmd}'")
     
@@ -856,6 +858,8 @@ class SerialReader:
             # Other specific patterns
             (r'Max Current:\s+([\d.]+)A', 'max_current'),
             (r'Max Current\s*=\s*([\d.]+)A', 'max_current'),
+            (r'Min Current:\s+([\d.]+)A', 'min_current'),
+            (r'Min Current\s*=\s*([\d.]+)A', 'min_current'),
             (r'Angle Filter Alpha\s*=\s*([\d.]+)', 'angle_filter_alpha'),
             (r'Angle Filter Alpha:\s+([\d.]+)', 'angle_filter_alpha'),
             (r'Angle Setpoint:\s+([-\d.]+)', 'angle_setpoint'),
@@ -865,6 +869,7 @@ class SerialReader:
             (r'Deadband\s*=\s*([\d.]+)°', 'deadband'),
             (r'Drive Offset:\s+([-\d.]+)°', 'drive_offset'),
             (r'Drive Offset\s*=\s*([-\d.]+)°', 'drive_offset'),
+            (r'VEL_SCALE\s*=\s*([-\d.]+)', 'vel_scale'),
             (r'Yaw Setpoint:\s+([-\d.]+)°', 'yaw_setpoint'),
             (r'Yaw Control:\s+(\w+)', 'yaw_control_enabled'),  # Will parse "ENABLED" or "DISABLED"
             (r'useVelocityLoop:\s+(\w+)', 'use_vel_loop'),     # "ON" or "OFF"
@@ -1323,8 +1328,8 @@ class RobotTuningGUI:
         ttk.Label(yaw_toggle_frame, text="Yaw Control:", font=self.medium_font, width=18).pack(side=tk.LEFT, padx=3)
         self.yaw_control_label = ttk.Label(yaw_toggle_frame, text="ENABLED", font=self.medium_font, width=12, anchor=tk.CENTER)
         self.yaw_control_label.pack(side=tk.LEFT, padx=6)
-        tk.Button(yaw_toggle_frame, text="Toggle (n)", font=self.button_font, padx=8, pady=2,
-                 command=lambda: self.serial_reader.send_command('n')).pack(side=tk.LEFT, padx=3)
+        tk.Button(yaw_toggle_frame, text="Toggle (f)", font=self.button_font, padx=8, pady=2,
+                 command=lambda: self.serial_reader.send_command('f')).pack(side=tk.LEFT, padx=3)
         
         # Velocity Control (Phase 1: Cascaded Control)
         velocity_frame = ttk.LabelFrame(parent, text="Velocity Control (Phase 1)", padding="8")
@@ -1362,6 +1367,7 @@ class RobotTuningGUI:
         # Velocity PID Tuning (P-only for initial tuning, Kd always 0)
         self.create_param_control(velocity_frame, "Vel Kp", 'w', 'W', 'Kp_vel', 0.05)
         self.create_param_control(velocity_frame, "Vel Ki", 'e', 'E', 'Ki_vel', 0.01)
+        self.create_param_control(velocity_frame, "VEL_SCALE", 'n', 'N', 'vel_scale', 0.1)
         # Note: Keep Ki=0 for initial tuning (P-only). Vel Kd is always 0 (PI only controller)
         vel_kd_frame = ttk.Frame(velocity_frame)
         vel_kd_frame.pack(fill=tk.X, pady=3)
@@ -1375,6 +1381,7 @@ class RobotTuningGUI:
         motor_frame.pack(fill=tk.X, pady=4)
         
         self.create_param_control(motor_frame, "Max Current (A)", 'm', 'M', 'max_current', 0.5)
+        self.create_param_control(motor_frame, "Min Current (A)", 'q', 'Q', 'min_current', 0.1)
         # Angle Setpoint: Target roll angle for balance (typically -3° to +3°, not necessarily 0°)
         self.create_param_control(motor_frame, "Angle Setpoint (°)", 'z', 'Z', 'angle_setpoint', 0.1)
         
@@ -1568,16 +1575,18 @@ Velocity Control (Phase 1 Cascaded):
   w/W - Decrease/Increase Velocity Kp
   e/E - Decrease/Increase Velocity Ki
   r/R - Velocity Kd (disabled - PI only controller, always 0)
+  n/N - Decrease/Increase VEL_SCALE
   0 - Stop (set velocity setpoint to 0.0)
 
 Yaw PID (Rotation):
   y/Y - Decrease/Increase Yaw Kp
   u/U - Decrease/Increase Yaw Ki
   h/H - Decrease/Increase Yaw Kd
-  n/N - Toggle yaw control on/off
+  f/F - Toggle yaw control on/off
 
 Motor Settings:
   m/M - Decrease/Increase Max Current
+  q/Q - Decrease/Increase Min Current
   z/Z - Decrease/Increase Angle Setpoint
   t/T - Toggle fine adjust (Kd step 0.002 when ON)
 
@@ -1711,7 +1720,7 @@ GUI Features:
             # Note: Kd_vel is always 0 (PI only controller) - display as fixed value
             if key == 'Kd_vel':
                 formatted = "0.00 (PI only)"  # Always 0, show as fixed
-            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kp_yaw', 'Ki_yaw', 'angle_filter_alpha']:
+            elif key in ['Kp_angle', 'Ki_angle', 'Kd_angle', 'Kp_vel', 'Ki_vel', 'Kp', 'Ki', 'Kp_yaw', 'Ki_yaw', 'angle_filter_alpha', 'vel_scale']:
                 formatted = f"{value:.2f}"
             elif key in ['Kd', 'Kd_yaw']:
                 formatted = f"{value:.3f}"
