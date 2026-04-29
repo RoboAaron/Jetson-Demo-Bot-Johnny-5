@@ -26,6 +26,9 @@ build/
 jetson/logs/
 tuning_code/logs/
 
+# Jetson SD card dump (local bundle copy, not for version control)
+jetson/SD_CARD_DUMP/
+
 # Editor / OS
 .DS_Store
 *.swp
