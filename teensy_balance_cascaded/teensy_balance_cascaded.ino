@@ -1004,7 +1004,13 @@ void loop() {
     bool isBalanceable = imuSettled && (abs(roll) < 25.0f);
     safetyCutoffActive = !isBalanceable;
 
+    // Track balance state transitions to prevent continuous PID rearming.
+    // Without this guard, rearmVelocityPID()/rearmYawPID() would zero their
+    // outputs every loop() pass (~500 Hz), making the velocity loop a no-op.
+    static bool wasNotBalanceable = true;
+
     if (!isBalanceable) {
+      wasNotBalanceable = true;
       velocityPID.SetMode(MANUAL);
       yawPID.SetMode(MANUAL);
       motorCurrent = 0.0f;
@@ -1027,8 +1033,14 @@ void loop() {
         lastSafetyDebug = millis();
       }
     } else {
-      if (velocityLoopActive && !FORCE_SINGLE_LOOP_MODE) rearmVelocityPID();
-      rearmYawPID();
+      // Only rearm velocity/yaw PIDs once on the transition from
+      // not-balanceable → balanceable (mirrors the pidFrozen guard
+      // used for balancePID in the ISR).
+      if (wasNotBalanceable) {
+        wasNotBalanceable = false;
+        if (velocityLoopActive && !FORCE_SINGLE_LOOP_MODE) rearmVelocityPID();
+        rearmYawPID();
+      }
 
       // === CHANGED === Rich debug every 100 ms when logging enabled (angleInput, setpoint, vel, deadband, useVelocityLoop, current).
       static unsigned long lastDebug = 0;
